@@ -62,6 +62,7 @@ import { db, type MessageRecord, type ContactRecord } from "@/lib/db"
 import { cn } from "@/lib/utils"
 import { RecipientInfoDialog } from "@/components/RecipientInfoDialog"
 import { ImagePreviewDialog } from "@/components/ImagePreviewDialog"
+import { LinkWarningDialog } from "@/components/LinkWarningDialog"
 
 type Attachment = {
   filename: string
@@ -267,9 +268,22 @@ export function DashboardLayout() {
   const [showRecipientInfo, setShowRecipientInfo] = React.useState(false)
   const [attachment, setAttachment] = React.useState<{ name: string; type: string; size: number; data: string } | null>(null)
   const [previewImage, setPreviewImage] = React.useState<string | null>(null)
+  const [pendingLink, setPendingLink] = React.useState<string | null>(null)
   const scrollRef = React.useRef<HTMLDivElement>(null)
   const typingTimeoutRef = React.useRef<NodeJS.Timeout | null>(null)
   const fileInputRef = React.useRef<HTMLInputElement>(null)
+  const textareaRef = React.useRef<HTMLTextAreaElement>(null)
+
+  // Auto-focus input when chat changes
+  React.useEffect(() => {
+    if (activeId && !isBusy) {
+      // Small delay to ensure the disabled state has updated if we were switching fast
+      const timer = setTimeout(() => {
+        textareaRef.current?.focus()
+      }, 50)
+      return () => clearTimeout(timer)
+    }
+  }, [activeId, isBusy])
 
   // Listen for ephemeral signals (typing indicators)
   React.useEffect(() => {
@@ -339,6 +353,11 @@ export function DashboardLayout() {
   const conversations = React.useMemo<ConversationPreview[]>(() => {
     const query = sidebarSearchQuery.toLowerCase().trim()
     
+    const truncate = (text: string, limit = 20) => {
+      if (text.length <= limit) return text
+      return text.substring(0, limit) + "..."
+    }
+
     if (!query) {
       const list = contacts.map((contact) => {
         const thread = messagesByPeer.get(contact.handle) ?? []
@@ -348,12 +367,14 @@ export function DashboardLayout() {
           ? 0
           : thread.filter((m) => m.direction === "in" && !m.isRead).length
         
+        const rawText = lastMessage?.text || (lastMessage?.attachments?.length ? "📎 Attachment" : "No messages yet")
+
         return {
           id: contact.handle,
           uid: contact.handle,
           name: contact.username,
           handle: contact.handle,
-          lastMessage: lastMessage?.text || (lastMessage?.attachments?.length ? "📎 Attachment" : "No messages yet"),
+          lastMessage: truncate(rawText),
           lastTimestamp: formatTimestamp(lastMessage?.timestamp ?? ""),
           lastTimestampRaw: lastMessage?.timestamp || contact.createdAt || "",
           unread,
@@ -383,12 +404,14 @@ export function DashboardLayout() {
         ? 0
         : thread.filter((m) => m.direction === "in" && !m.isRead).length
 
+      const rawText = lastMessage?.text || (lastMessage?.attachments?.length ? "📎 Attachment" : "No messages yet")
+
       results.push({
         id: contact.handle,
         uid: contact.handle,
         name: contact.username,
         handle: contact.handle,
-        lastMessage: lastMessage?.text || (lastMessage?.attachments?.length ? "📎 Attachment" : "No messages yet"),
+        lastMessage: truncate(rawText),
         lastTimestamp: formatTimestamp(lastMessage?.timestamp ?? ""),
         unread,
         status: "offline" as const,
@@ -409,7 +432,7 @@ export function DashboardLayout() {
           uid: `${contact.handle}:${msg.id}`,
           name: contact.username,
           handle: contact.handle,
-          lastMessage: msg.text,
+          lastMessage: truncate(msg.text),
           lastTimestamp: formatTimestamp(msg.timestamp),
           unread: 0, // Search results typically don't show unread counts for the message itself
           status: "offline" as const,
@@ -765,7 +788,6 @@ export function DashboardLayout() {
           host: handleParts.host,
           publicIdentityKey: entry.public_identity_key,
           publicTransportKey: entry.public_transport_key,
-          createdAt: new Date().toISOString(),
         }
         if (masterKey && user?.handle) {
           const ownerId = user.id ?? user.handle
@@ -966,6 +988,11 @@ export function DashboardLayout() {
         open={!!previewImage} 
         onOpenChange={(open) => !open && setPreviewImage(null)} 
       />
+      <LinkWarningDialog 
+        url={pendingLink} 
+        open={!!pendingLink} 
+        onOpenChange={(open) => !open && setPendingLink(null)} 
+      />
       <AppSidebar
         conversations={conversations}
         activeId={activeContact?.handle ?? ""}
@@ -1111,7 +1138,7 @@ export function DashboardLayout() {
                     >
                       <div
                         className={cn(
-                          "max-w-[85%] px-3 py-2 text-sm leading-relaxed shadow-sm sm:max-w-[70%] transition-all duration-500",
+                          "max-w-[80%] pl-3 pr-5 py-2.5 text-sm leading-relaxed shadow-sm sm:max-w-[70%] transition-all duration-500 break-all overflow-hidden",
                           highlightedMessageId === message.id &&
                             "ring-2 ring-emerald-500 ring-offset-2 dark:ring-offset-slate-900 scale-[1.02]",
                           message.direction === "out"
@@ -1148,8 +1175,26 @@ export function DashboardLayout() {
                           </div>
                         ))}
                         {message.text && (
-                          <div className="whitespace-pre-wrap prose prose-sm dark:prose-invert prose-emerald max-w-none prose-p:leading-relaxed prose-pre:bg-muted prose-pre:p-2 prose-pre:rounded-md prose-code:text-emerald-600 dark:prose-code:text-emerald-400">
-                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                          <div className="whitespace-pre-wrap prose prose-sm dark:prose-invert prose-emerald max-w-none prose-p:leading-relaxed prose-pre:bg-muted prose-pre:p-2 prose-pre:rounded-md prose-code:text-emerald-600 dark:prose-code:text-emerald-400 break-all">
+                            <ReactMarkdown 
+                              remarkPlugins={[remarkGfm]}
+                              components={{
+                                a: ({ node, href, children, ...props }) => {
+                                  return (
+                                    <a
+                                      href={href}
+                                      onClick={(e) => {
+                                        e.preventDefault()
+                                        if (href) setPendingLink(href)
+                                      }}
+                                      {...props}
+                                    >
+                                      {children}
+                                    </a>
+                                  )
+                                }
+                              }}
+                            >
                               {message.text}
                             </ReactMarkdown>
                           </div>
@@ -1260,6 +1305,7 @@ export function DashboardLayout() {
                 <Paperclip />
               </Button>
               <TextareaAutosize
+                ref={textareaRef}
                 placeholder={
                   activeContact
                     ? `Message ${activeContact.username}`

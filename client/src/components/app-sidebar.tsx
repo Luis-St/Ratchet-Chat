@@ -125,8 +125,8 @@ export function AppSidebar({
       <SidebarContent className="px-2">
         <SidebarGroup>
           <SidebarGroupContent>
-            <ScrollArea className="h-[calc(100svh-220px)] pr-2">
-              <SidebarMenu>
+            <ScrollArea className="h-[calc(100svh-220px)] pr-2 w-full">
+              <SidebarMenu className="max-w-full">
                 {conversations.length === 0 ? (
                   <SidebarMenuItem>
                     <div className="rounded-xl border border-dashed border-border p-4 text-xs text-muted-foreground group-data-[collapsible=icon]:hidden">
@@ -139,7 +139,7 @@ export function AppSidebar({
                   conversations.map((conversation) => (
                     <SidebarMenuItem key={conversation.uid}>
                       <SidebarMenuButton
-                        className="h-auto items-start gap-3 rounded-xl px-3 py-3 data-[active=true]:bg-emerald-100 dark:data-[active=true]:bg-emerald-900/20 data-[active=true]:text-emerald-900 dark:data-[active=true]:text-emerald-100"
+                        className="h-auto w-full overflow-hidden items-start gap-3 rounded-xl px-3 py-3 data-[active=true]:bg-emerald-100 dark:data-[active=true]:bg-emerald-900/20 data-[active=true]:text-emerald-900 dark:data-[active=true]:text-emerald-100"
                         isActive={activeId === conversation.id && !conversation.foundMessageId}
                         onClick={() => {
                           onSelectConversation(conversation.id, conversation.foundMessageId)
@@ -148,7 +148,7 @@ export function AppSidebar({
                           }
                         }}
                       >
-                        <div className="relative mt-0.5">
+                        <div className="relative mt-0.5 shrink-0">
                           <Avatar className="h-10 w-10">
                             <AvatarImage src={conversation.avatar ?? ""} />
                             <AvatarFallback>
@@ -165,21 +165,24 @@ export function AppSidebar({
                           />
                         </div>
                         <div className="min-w-0 flex-1 space-y-1 group-data-[collapsible=icon]:hidden">
-                          <div className="flex items-center justify-between gap-2">
-                            <p className="truncate text-sm font-semibold">
+                          <div className="flex items-center justify-between gap-2 min-w-0">
+                            <p className="truncate text-sm font-semibold flex-1">
                               {conversation.name}
                             </p>
-                            <span className="text-[11px] text-muted-foreground">
+                            <span className="shrink-0 text-[11px] text-muted-foreground">
                               {conversation.lastTimestamp}
                             </span>
                           </div>
-                          <div className="flex items-center justify-between gap-2">
-                            <p className="truncate text-xs text-muted-foreground">
+                          <div className="flex items-center justify-between gap-2 min-w-0">
+                            <p 
+                              className="truncate text-xs text-muted-foreground flex-1"
+                              title={conversation.lastMessage}
+                            >
                               {conversation.foundMessageId && <span className="font-semibold text-emerald-600 dark:text-emerald-400 mr-1">Found:</span>}
                               {conversation.lastMessage}
                             </p>
                             {conversation.unread > 0 && !conversation.foundMessageId ? (
-                              <span className="min-w-[20px] rounded-full bg-emerald-500 px-1.5 py-0.5 text-center text-[10px] font-semibold text-white">
+                              <span className="shrink-0 min-w-[20px] rounded-full bg-emerald-500 px-1.5 py-0.5 text-center text-[10px] font-semibold text-white">
                                 {conversation.unread}
                               </span>
                             ) : null}
