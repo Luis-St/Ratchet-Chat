@@ -18,6 +18,7 @@ fields as described per endpoint.
 - Receipt types: `DELIVERED_TO_SERVER`, `PROCESSED_BY_CLIENT`, `READ_BY_USER`.
 - Error shape: `{ "error": "message" }` with an appropriate status code.
 - Server JSON body limit: 2 MB.
+- Rate limits apply to auth, federation, and log ingestion endpoints (`429`).
 
 ## Authentication
 
@@ -25,6 +26,8 @@ fields as described per endpoint.
 - Send as: `Authorization: Bearer <jwt>`.
 - JWT `sub` is the user id; `username` is also encoded in the token.
 - Socket.IO auth uses the same JWT (see Realtime section).
+- Password authentication uses SRP-6a (`/auth/srp/*`) and never sends plaintext
+  passwords to the server.
 
 ## Server API
 
@@ -38,9 +41,6 @@ Request body:
 ```json
 {
   "username": "alice",
-  "auth_hash": "base64",
-  "auth_salt": "base64",
-  "auth_iterations": 200000,
   "kdf_salt": "base64",
   "kdf_iterations": 310000,
   "public_identity_key": "base64",
@@ -48,14 +48,17 @@ Request body:
   "encrypted_identity_key": "base64",
   "encrypted_identity_iv": "base64",
   "encrypted_transport_key": "base64",
-  "encrypted_transport_iv": "base64"
+  "encrypted_transport_iv": "base64",
+  "srp_salt": "base64",
+  "srp_verifier": "base64"
 }
 ```
 
 Notes:
 - `username` must be local (no `@`), length 3-64.
-- `auth_hash` is derived client-side using PBKDF2 with `auth_salt` and `auth_iterations`.
 - `kdf_*` fields are used client-side to derive the master key; the server stores them for later login.
+- The server enforces minimum/maximum iteration counts for `kdf_iterations`.
+- `srp_salt` and `srp_verifier` are used for SRP-6a login.
 
 Responses:
 - `201`:
@@ -74,13 +77,12 @@ Responses:
 
 #### GET /auth/params/:username
 
-Returns authentication and KDF parameters for a local username.
+Returns key-derivation parameters for a local username (used to derive the
+client master key).
 
 Response:
 ```json
 {
-  "auth_salt": "base64",
-  "auth_iterations": 200000,
   "kdf_salt": "base64",
   "kdf_iterations": 310000
 }
@@ -88,13 +90,47 @@ Response:
 
 #### POST /auth/login
 
-Authenticates a local user and returns a JWT plus encrypted private keys.
+Deprecated. Use SRP login endpoints.
+
+Response:
+```json
+{
+  "error": "Use SRP login endpoints"
+}
+```
+
+#### POST /auth/srp/start
+
+Starts SRP-6a login by accepting the client ephemeral `A` and returning the SRP
+salt and server ephemeral `B`.
 
 Request body:
 ```json
 {
   "username": "alice",
-  "auth_hash": "base64"
+  "A": "base64"
+}
+```
+
+Response:
+```json
+{
+  "salt": "base64",
+  "B": "base64"
+}
+```
+
+#### POST /auth/srp/verify
+
+Completes SRP-6a login by verifying the client proof `M1`. Returns JWT, encrypted
+keys, and server proof `M2` so the client can verify the server.
+
+Request body:
+```json
+{
+  "username": "alice",
+  "A": "base64",
+  "M1": "base64"
 }
 ```
 
@@ -102,6 +138,7 @@ Response:
 ```json
 {
   "token": "jwt",
+  "M2": "base64",
   "keys": {
     "encrypted_identity_key": "base64",
     "encrypted_identity_iv": "base64",
@@ -143,6 +180,33 @@ Same response and behavior as `/directory/:handle`.
 
 ### Federation (public, server-to-server)
 
+#### GET /.well-known/ratchet-chat/federation.json
+
+Federation discovery document used for trust/pinning and endpoint discovery.
+
+Response:
+```json
+{
+  "host": "ratchet.example.com",
+  "version": 1,
+  "inbox_url": "/api/federation/incoming",
+  "receipts_url": "/api/federation/receipts",
+  "directory_url": "/directory",
+  "keys": [
+    {
+      "kid": "base64url",
+      "public_key": "base64",
+      "status": "active",
+      "created_at": "2024-01-01T00:00:00.000Z",
+      "expires_at": null
+    }
+  ],
+  "generated_at": "2024-01-01T00:00:00.000Z",
+  "signature": "base64",
+  "signature_kid": "base64url"
+}
+```
+
 #### GET /api/federation/key
 
 Returns this server's federation identity.
@@ -177,6 +241,9 @@ Behavior:
 - Verifies signature via callback to `https://<X-Ratchet-Host>/api/federation/key`
   in production; http is allowed for localhost in development.
 - Rejects if `sender_handle` host does not match `X-Ratchet-Host`.
+- Rejects hosts that resolve to private/reserved IPs in production or that are not
+  in the configured allowlist (if set).
+- Detects replayed payloads and returns `409`.
 
 Response:
 ```json
@@ -204,6 +271,13 @@ Request body:
   "type": "READ_BY_USER"
 }
 ```
+
+Behavior:
+- Verifies signature via callback to `https://<X-Ratchet-Host>/api/federation/key`
+  in production; http is allowed for localhost in development.
+- Rejects hosts that resolve to private/reserved IPs in production or that are not
+  in the configured allowlist (if set).
+- Detects replayed payloads and returns `409`.
 
 Response:
 ```json
@@ -479,7 +553,8 @@ Response:
 Receives client-side logs and writes them to the client log file.
 
 Headers:
-- `Origin` must match `NEXT_PUBLIC_APP_URL` prefix if configured.
+- `Origin` must match `NEXT_PUBLIC_APP_URL` origin when required.
+- `Authorization: Bearer <jwt>` when `CLIENT_LOG_REQUIRE_AUTH=true` (default in production).
 - `Content-Type: application/json`
 
 Request body:
@@ -496,6 +571,7 @@ Request body:
 Behavior:
 - Rejects payloads larger than `CLIENT_LOG_MAX_BYTES` (default 200000 bytes).
 - Redacts sensitive keys before writing logs.
+- Rate limits apply and return `429` when exceeded.
 
 Response:
 ```json

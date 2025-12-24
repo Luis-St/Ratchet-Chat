@@ -9,9 +9,9 @@ The server never receives plaintext messages, raw passwords, or private keys.
 ## Authentication
 
 - JWT is required for all endpoints except `POST /auth/register`, `GET /auth/params/:username`,
-  `POST /auth/login`, `GET /directory/:handle`, `GET /api/directory`,
-  `GET /api/federation/key`, `POST /api/federation/incoming`, and
-  `POST /api/federation/receipts`.
+  `POST /auth/login`, `POST /auth/srp/start`, `POST /auth/srp/verify`,
+  `GET /directory/:handle`, `GET /api/directory`, `GET /api/federation/key`,
+  `POST /api/federation/incoming`, and `POST /api/federation/receipts`.
 - Send the token using `Authorization: Bearer <jwt>`.
 - JWT subject (`sub`) is the user id.
 
@@ -42,9 +42,6 @@ Request body:
 ```json
 {
   "username": "alice",
-  "auth_hash": "base64",
-  "auth_salt": "base64",
-  "auth_iterations": 200000,
   "kdf_salt": "base64",
   "kdf_iterations": 310000,
   "public_identity_key": "base64",
@@ -52,7 +49,9 @@ Request body:
   "encrypted_identity_key": "base64",
   "encrypted_identity_iv": "base64",
   "encrypted_transport_key": "base64",
-  "encrypted_transport_iv": "base64"
+  "encrypted_transport_iv": "base64",
+  "srp_salt": "base64",
+  "srp_verifier": "base64"
 }
 ```
 
@@ -70,26 +69,57 @@ Response:
 ```
 
 #### GET /auth/params/:username
-Returns authentication and key-derivation parameters for a local username.
+Returns key-derivation parameters for a local username (used to derive the
+client master key).
 
 Response:
 ```json
 {
-  "auth_salt": "base64",
-  "auth_iterations": 200000,
   "kdf_salt": "base64",
   "kdf_iterations": 310000
 }
 ```
 
 #### POST /auth/login
-Authenticates and returns a JWT.
+Deprecated. Use SRP login endpoints.
+
+Response:
+```json
+{
+  "error": "Use SRP login endpoints"
+}
+```
+
+#### POST /auth/srp/start
+Starts SRP-6a login by accepting the client ephemeral `A` and returning the SRP
+salt and server ephemeral `B`.
 
 Request body:
 ```json
 {
   "username": "alice",
-  "auth_hash": "base64"
+  "A": "base64"
+}
+```
+
+Response:
+```json
+{
+  "salt": "base64",
+  "B": "base64"
+}
+```
+
+#### POST /auth/srp/verify
+Completes SRP-6a login by verifying the client proof `M1`. Returns JWT, encrypted
+keys, and server proof `M2` so the client can verify the server.
+
+Request body:
+```json
+{
+  "username": "alice",
+  "A": "base64",
+  "M1": "base64"
 }
 ```
 
@@ -97,6 +127,7 @@ Response:
 ```json
 {
   "token": "jwt",
+  "M2": "base64",
   "keys": {
     "encrypted_identity_key": "base64",
     "encrypted_identity_iv": "base64",
@@ -111,6 +142,32 @@ Response:
 ```
 
 ### Group 1: Identity & Directory (Public)
+
+#### GET /.well-known/ratchet-chat/federation.json
+Federation discovery document used for trust/pinning and endpoint discovery.
+
+Response:
+```json
+{
+  "host": "ratchet.example.com",
+  "version": 1,
+  "inbox_url": "/api/federation/incoming",
+  "receipts_url": "/api/federation/receipts",
+  "directory_url": "/directory",
+  "keys": [
+    {
+      "kid": "base64url",
+      "public_key": "base64",
+      "status": "active",
+      "created_at": "2024-01-01T00:00:00.000Z",
+      "expires_at": null
+    }
+  ],
+  "generated_at": "2024-01-01T00:00:00.000Z",
+  "signature": "base64",
+  "signature_kid": "base64url"
+}
+```
 
 #### GET /directory/:handle
 Returns public keys and id for a handle. If the handle belongs to a remote

@@ -41,6 +41,20 @@ cp .env.example .env
 docker compose -f docker-compose.prod.yml up --build -d
 ```
 
+### Production Requirements
+
+- DNS: only the client and server subdomain records (A/AAAA) are required.
+- TLS termination: use a reverse proxy (nginx, caddy, etc.) for HTTPS.
+- Environment variables (set in `.env` for compose):
+  - `SERVER_HOST` (e.g. `ratchet.example.com`)
+  - `NEXT_PUBLIC_API_URL` (e.g. `https://ratchet.example.com`)
+  - `NEXT_PUBLIC_API_HOST` (e.g. `ratchet.example.com`)
+  - `NEXT_PUBLIC_APP_URL` (e.g. `https://ratchet-client.example.com`)
+  - `JWT_SECRET` (strong random value)
+  - `CORS_ALLOWED_ORIGINS` (e.g. `https://ratchet-client.example.com`)
+- Federation trust defaults to TOFU; you may optionally set
+  `FEDERATION_ALLOWED_HOSTS` for an allowlist.
+
 ## Logs
 
 - Server logs: `server/logs/server.log`
@@ -53,4 +67,4 @@ automatically on server startup.
 
 ## Configuration
 
-See `.env.example`, `server/.env.example`, and `client/.env.example`.
+See `.env.example` for all required settings.

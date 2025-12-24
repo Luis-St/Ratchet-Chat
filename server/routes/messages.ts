@@ -10,12 +10,15 @@ import {
   federationRequestJson,
   getFederationIdentity,
   getServerHost,
+  isFederationHostAllowed,
   resolveFederationProtocol,
+  resolveFederationEndpoint,
   signFederationPayload,
 } from "../lib/federationAuth";
 import { verifyFederationSignature } from "../middleware/federation";
 import { buildHandle, getInstanceHost, parseHandle } from "../lib/handles";
 import { serverLogger, sanitizeLogPayload } from "../lib/logger";
+import { createRateLimiter } from "../middleware/rateLimit";
 
 const sendSchema = z.object({
   recipient_handle: z.string().min(1),
@@ -72,6 +75,18 @@ export const createMessagesRouter = (
   const serverHost = getServerHost();
   const federationIncomingPath = "/api/federation/incoming";
   const federationReceiptsPath = "/api/federation/receipts";
+  const federationLimiter = createRateLimiter({
+    windowMs: Number(process.env.FEDERATION_RATE_LIMIT_WINDOW_MS ?? 60000),
+    max: Number(process.env.FEDERATION_RATE_LIMIT_MAX ?? 120),
+    keyPrefix: "federation",
+    keyGenerator: (req) => {
+      const header = req.headers["x-ratchet-host"];
+      if (Array.isArray(header)) {
+        return header[0] ?? req.ip ?? "";
+      }
+      return header ?? req.ip ?? "";
+    },
+  });
 
   router.get("/api/federation/key", (req: Request, res: Response) => {
     const identity = getFederationIdentity();
@@ -157,11 +172,13 @@ export const createMessagesRouter = (
 
   router.post(
     "/api/federation/incoming",
+    federationLimiter,
     verifyFederationSignature(),
     handleFederationIncoming
   );
   router.post(
     "/federation/incoming",
+    federationLimiter,
     verifyFederationSignature(),
     handleFederationIncoming
   );
@@ -222,11 +239,13 @@ export const createMessagesRouter = (
 
   router.post(
     "/api/federation/receipts",
+    federationLimiter,
     verifyFederationSignature({ requireSenderHandle: false }),
     handleFederationReceipts
   );
   router.post(
     "/federation/receipts",
+    federationLimiter,
     verifyFederationSignature({ requireSenderHandle: false }),
     handleFederationReceipts
   );
@@ -292,6 +311,9 @@ export const createMessagesRouter = (
     };
 
     if (!recipientParsed.isLocal) {
+      if (!(await isFederationHostAllowed(recipientParsed.host))) {
+        return res.status(400).json({ error: "Invalid host" });
+      }
       const payload = {
         recipient_handle: recipientParsed.handle,
         sender_handle: senderHandle,
@@ -299,8 +321,13 @@ export const createMessagesRouter = (
       };
       const payloadJson = JSON.stringify(payload);
       const signature = signFederationPayload(payloadJson);
-      const protocol = resolveFederationProtocol(recipientParsed.host);
-      const remoteUrl = `${protocol}://${recipientParsed.host}${federationIncomingPath}`;
+      const resolvedUrl =
+        (await resolveFederationEndpoint(recipientParsed.host, "inbox")) ??
+        (() => {
+          const protocol = resolveFederationProtocol(recipientParsed.host);
+          return `${protocol}://${recipientParsed.host}${federationIncomingPath}`;
+        })();
+      const remoteUrl = resolvedUrl;
       serverLogger.info("federation.outgoing.send", {
         remote_url: remoteUrl,
         headers: sanitizeLogPayload({
@@ -484,7 +511,7 @@ export const createMessagesRouter = (
         const created = await tx.messageVault.create({
           data: {
             owner_id: req.user!.id,
-            original_sender_handle: queueItem.sender_handle,
+            original_sender_handle: queueItem.sender_handle!,
             encrypted_blob,
             iv,
             sender_signature_verified,
@@ -637,6 +664,9 @@ const deleteChatSchema = z.object({
       try {
         const recipientParsed = parseHandle(recipient_handle, instanceHost);
         if (!recipientParsed.isLocal) {
+          if (!(await isFederationHostAllowed(recipientParsed.host))) {
+            return res.status(400).json({ error: "Invalid host" });
+          }
           const payload = {
             recipient_handle: recipientParsed.handle,
             message_id,
@@ -644,8 +674,13 @@ const deleteChatSchema = z.object({
           };
           const payloadJson = JSON.stringify(payload);
           const signature = signFederationPayload(payloadJson);
-          const protocol = resolveFederationProtocol(recipientParsed.host);
-          const remoteUrl = `${protocol}://${recipientParsed.host}${federationReceiptsPath}`;
+          const resolvedUrl =
+            (await resolveFederationEndpoint(recipientParsed.host, "receipts")) ??
+            (() => {
+              const protocol = resolveFederationProtocol(recipientParsed.host);
+              return `${protocol}://${recipientParsed.host}${federationReceiptsPath}`;
+            })();
+          const remoteUrl = resolvedUrl;
           serverLogger.info("federation.receipts.send", {
             remote_url: remoteUrl,
             headers: sanitizeLogPayload({

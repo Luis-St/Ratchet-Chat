@@ -5,11 +5,10 @@ CREATE TYPE "ReceiptType" AS ENUM ('DELIVERED_TO_SERVER', 'PROCESSED_BY_CLIENT',
 CREATE TABLE "User" (
     "id" UUID NOT NULL,
     "username" TEXT NOT NULL,
-    "auth_hash" TEXT NOT NULL,
-    "auth_salt" TEXT NOT NULL,
-    "auth_iterations" INTEGER NOT NULL,
     "kdf_salt" TEXT NOT NULL,
     "kdf_iterations" INTEGER NOT NULL,
+    "srp_salt" TEXT,
+    "srp_verifier" TEXT,
     "public_identity_key" TEXT NOT NULL,
     "public_transport_key" TEXT NOT NULL,
     "encrypted_identity_key" TEXT NOT NULL,
@@ -25,7 +24,7 @@ CREATE TABLE "User" (
 CREATE TABLE "IncomingQueue" (
     "id" UUID NOT NULL,
     "recipient_id" UUID NOT NULL,
-    "sender_handle" TEXT NOT NULL,
+    "sender_handle" TEXT,
     "encrypted_blob" TEXT NOT NULL,
     "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 

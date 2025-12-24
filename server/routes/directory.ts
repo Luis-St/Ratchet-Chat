@@ -7,7 +7,12 @@ import {
   getInstanceHost,
   parseHandle,
 } from "../lib/handles";
-import { federationRequestJson, resolveFederationProtocol } from "../lib/federationAuth";
+import {
+  federationRequestJson,
+  resolveFederationProtocol,
+  isFederationHostAllowed,
+  resolveFederationEndpoint,
+} from "../lib/federationAuth";
 import { serverLogger } from "../lib/logger";
 
 export const createDirectoryRouter = (prisma: PrismaClient) => {
@@ -57,9 +62,18 @@ export const createDirectoryRouter = (prisma: PrismaClient) => {
       });
     }
 
-    const normalizedPath = federationDirectoryPath.replace(/\/$/, "");
-    const protocol = resolveFederationProtocol(parsed.host);
-    const remoteUrl = `${protocol}://${parsed.host}${normalizedPath}/${encodeURIComponent(
+    if (!(await isFederationHostAllowed(parsed.host))) {
+      return res.status(400).json({ error: "Invalid host" });
+    }
+
+    const resolvedDirectory =
+      (await resolveFederationEndpoint(parsed.host, "directory")) ??
+      (() => {
+        const normalizedPath = federationDirectoryPath.replace(/\/$/, "");
+        const protocol = resolveFederationProtocol(parsed.host);
+        return `${protocol}://${parsed.host}${normalizedPath}`;
+      })();
+    const remoteUrl = `${resolvedDirectory.replace(/\/$/, "")}/${encodeURIComponent(
       parsed.username
     )}`;
     serverLogger.info("directory.lookup.remote", {

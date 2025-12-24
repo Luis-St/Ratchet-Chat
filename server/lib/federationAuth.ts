@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import dns from "dns/promises";
 import fs from "fs";
 import http from "http";
 import https from "https";
@@ -24,12 +25,35 @@ type FederationKeyPair = {
   privateKey: crypto.KeyObject;
   publicKey: crypto.KeyObject;
   publicKeyBase64: string;
+  keyId: string;
+  createdAt: string;
 };
 
 export type FederationKeyEntry = {
   host: string;
   publicKey: string;
   key: crypto.KeyObject;
+  expiresAt: number;
+};
+
+export type FederationDiscoveryKey = {
+  kid: string;
+  public_key: string;
+  status: "active" | "next";
+  created_at?: string;
+  expires_at?: string | null;
+};
+
+export type FederationDiscoveryDocument = {
+  host: string;
+  version: number;
+  inbox_url: string;
+  receipts_url: string;
+  directory_url: string;
+  keys: FederationDiscoveryKey[];
+  signature: string;
+  signature_kid: string;
+  generated_at: string;
 };
 
 let cachedTlsConfig: FederationTlsConfig | null | undefined;
@@ -37,6 +61,40 @@ let cachedFederationKeys: FederationKeyPair | null = null;
 const federationKeyCache = new Map<string, FederationKeyEntry>();
 const FEDERATION_CERT_PATH =
   process.env.SERVER_CERT_PATH ?? path.join(process.cwd(), ".cert");
+const FEDERATION_KEY_TTL_MS = Number(
+  process.env.FEDERATION_KEY_TTL_MS ?? 6 * 60 * 60 * 1000
+);
+const FEDERATION_DISCOVERY_TTL_MS = Number(
+  process.env.FEDERATION_DISCOVERY_TTL_MS ?? 10 * 60 * 1000
+);
+const FEDERATION_ALLOWED_HOSTS = new Set(
+  (process.env.FEDERATION_ALLOWED_HOSTS ?? "")
+    .split(",")
+    .map((entry) => entry.trim().toLowerCase())
+    .filter(Boolean)
+);
+const FEDERATION_ALLOW_PRIVATE_IPS =
+  process.env.FEDERATION_ALLOW_PRIVATE_IPS === "true";
+const FEDERATION_TRUST_MODE = (
+  process.env.FEDERATION_TRUST_MODE ??
+  ((process.env.NODE_ENV ?? "development") === "production" ? "tofu" : "tofu")
+).toLowerCase();
+
+type FederationTrustEntry = {
+  host: string;
+  kid: string;
+  publicKey: string;
+  pinnedAt: number;
+  verifiedAt: number;
+};
+
+type FederationDiscoveryCacheEntry = {
+  doc: FederationDiscoveryDocument;
+  expiresAt: number;
+};
+
+const federationTrustStore = new Map<string, FederationTrustEntry>();
+const federationDiscoveryCache = new Map<string, FederationDiscoveryCacheEntry>();
 
 const loadFederationTlsConfig = (): FederationTlsConfig | null => {
   const caPath = process.env.FEDERATION_TLS_CA_PATH;
@@ -87,16 +145,23 @@ const parseEnvFile = (contents: string): Record<string, string> => {
 const loadKeysFromCertFile = (): {
   privateKeyBase64?: string;
   publicKeyBase64?: string;
+  createdAt?: string;
 } | null => {
   if (!fs.existsSync(FEDERATION_CERT_PATH)) {
     return null;
   }
   try {
+    try {
+      fs.chmodSync(FEDERATION_CERT_PATH, 0o600);
+    } catch {
+      // Best effort only.
+    }
     const contents = fs.readFileSync(FEDERATION_CERT_PATH, "utf8");
     const parsed = parseEnvFile(contents);
     return {
       privateKeyBase64: parsed.SERVER_PRIVATE_KEY,
       publicKeyBase64: parsed.SERVER_PUBLIC_KEY,
+      createdAt: parsed.SERVER_KEY_CREATED_AT,
     };
   } catch {
     return null;
@@ -105,15 +170,25 @@ const loadKeysFromCertFile = (): {
 
 const writeKeysToCertFile = (
   privateKeyBase64: string,
-  publicKeyBase64: string
+  publicKeyBase64: string,
+  createdAt: string
 ) => {
   try {
     const output = [
       "SERVER_PRIVATE_KEY=" + privateKeyBase64,
       "SERVER_PUBLIC_KEY=" + publicKeyBase64,
+      "SERVER_KEY_CREATED_AT=" + createdAt,
       "",
     ].join("\n");
-    fs.writeFileSync(FEDERATION_CERT_PATH, output, { encoding: "utf8" });
+    fs.writeFileSync(FEDERATION_CERT_PATH, output, {
+      encoding: "utf8",
+      mode: 0o600,
+    });
+    try {
+      fs.chmodSync(FEDERATION_CERT_PATH, 0o600);
+    } catch {
+      // Best effort only.
+    }
   } catch {
     // Best effort only; fall back to in-memory keys if this fails.
   }
@@ -125,6 +200,7 @@ const createFederationKeyPair = (): FederationKeyPair => {
     certFileKeys?.privateKeyBase64 ?? process.env.SERVER_PRIVATE_KEY;
   const publicKeyBase64 =
     certFileKeys?.publicKeyBase64 ?? process.env.SERVER_PUBLIC_KEY;
+  const createdAt = certFileKeys?.createdAt ?? process.env.SERVER_KEY_CREATED_AT;
 
   if (privateKeyBase64 && publicKeyBase64) {
     const privateKey = crypto.createPrivateKey({
@@ -137,27 +213,40 @@ const createFederationKeyPair = (): FederationKeyPair => {
       format: "der",
       type: "spki",
     });
-    if (!certFileKeys?.privateKeyBase64 || !certFileKeys?.publicKeyBase64) {
-      writeKeysToCertFile(privateKeyBase64, publicKeyBase64);
+    const createdAtValue = createdAt ?? new Date().toISOString();
+    if (
+      !certFileKeys?.privateKeyBase64 ||
+      !certFileKeys?.publicKeyBase64 ||
+      !certFileKeys?.createdAt
+    ) {
+      writeKeysToCertFile(privateKeyBase64, publicKeyBase64, createdAtValue);
     }
+    const keyId = computeKeyId(publicKeyBase64);
     return {
       privateKey,
       publicKey,
       publicKeyBase64,
+      keyId,
+      createdAt: createdAtValue,
     };
   }
 
   const { publicKey, privateKey } = crypto.generateKeyPairSync("ed25519");
   const publicKeyDer = publicKey.export({ type: "spki", format: "der" });
   const publicKeyBase64Generated = Buffer.from(publicKeyDer).toString("base64");
+  const createdAtValue = new Date().toISOString();
   writeKeysToCertFile(
     privateKey.export({ type: "pkcs8", format: "der" }).toString("base64"),
-    publicKeyBase64Generated
+    publicKeyBase64Generated,
+    createdAtValue
   );
+  const keyId = computeKeyId(publicKeyBase64Generated);
   return {
     privateKey,
     publicKey,
     publicKeyBase64: publicKeyBase64Generated,
+    keyId,
+    createdAt: createdAtValue,
   };
 };
 
@@ -175,6 +264,115 @@ const hostIsLocal = (host: string) => normalizeHost(host).includes("localhost");
 const hostIsIp = (host: string) => {
   const hostname = normalizeHost(host).split(":")[0];
   return isIP(hostname) !== 0;
+};
+
+const isPrivateIpv4 = (ip: string): boolean => {
+  const parts = ip.split(".").map((part) => Number(part));
+  if (parts.length !== 4 || parts.some((part) => Number.isNaN(part))) {
+    return true;
+  }
+  const [a, b] = parts;
+  if (a === 10) return true;
+  if (a === 127) return true;
+  if (a === 169 && b === 254) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 100 && b >= 64 && b <= 127) return true;
+  if (a === 0) return true;
+  if (a >= 224) return true;
+  return false;
+};
+
+const isPrivateIpv6 = (ip: string): boolean => {
+  const value = ip.toLowerCase();
+  if (value === "::" || value === "::1") {
+    return true;
+  }
+  if (value.startsWith("fc") || value.startsWith("fd")) {
+    return true;
+  }
+  if (
+    value.startsWith("fe8") ||
+    value.startsWith("fe9") ||
+    value.startsWith("fea") ||
+    value.startsWith("feb")
+  ) {
+    return true;
+  }
+  if (value.startsWith("ff")) {
+    return true;
+  }
+  if (value.startsWith("::ffff:")) {
+    const ipv4 = value.slice("::ffff:".length);
+    return isPrivateIpv4(ipv4);
+  }
+  return false;
+};
+
+const isBlockedHostname = (hostname: string): boolean => {
+  const lowered = hostname.toLowerCase();
+  if (lowered === "localhost") {
+    return true;
+  }
+  return (
+    lowered.endsWith(".localhost") ||
+    lowered.endsWith(".local") ||
+    lowered.endsWith(".internal") ||
+    lowered.endsWith(".lan")
+  );
+};
+
+export const isFederationHostAllowed = async (
+  host: string
+): Promise<boolean> => {
+  const normalized = normalizeHost(host);
+  const hostname = normalized.split(":")[0];
+  if (!hostname) {
+    return false;
+  }
+  if (
+    FEDERATION_ALLOWED_HOSTS.size > 0 &&
+    !FEDERATION_ALLOWED_HOSTS.has(normalized) &&
+    !FEDERATION_ALLOWED_HOSTS.has(hostname)
+  ) {
+    return false;
+  }
+
+  const env = process.env.NODE_ENV ?? "development";
+  const allowPrivate =
+    env !== "production" || FEDERATION_ALLOW_PRIVATE_IPS;
+
+  if (isBlockedHostname(hostname)) {
+    return allowPrivate;
+  }
+
+  if (isIP(hostname) !== 0) {
+    if (!allowPrivate && isPrivateIpv4(hostname)) {
+      return false;
+    }
+    return true;
+  }
+
+  try {
+    const addresses = await dns.lookup(hostname, { all: true });
+    if (addresses.length === 0) {
+      return false;
+    }
+    for (const address of addresses) {
+      if (!allowPrivate) {
+        if (address.family === 4 && isPrivateIpv4(address.address)) {
+          return false;
+        }
+        if (address.family === 6 && isPrivateIpv6(address.address)) {
+          return false;
+        }
+      }
+    }
+  } catch {
+    return false;
+  }
+
+  return true;
 };
 
 export const resolveFederationProtocol = (
@@ -202,6 +400,57 @@ export const getFederationIdentity = (): { host: string; publicKey: string } => 
   return {
     host: getServerHost(),
     publicKey: keyPair.publicKeyBase64,
+  };
+};
+
+const stableStringify = (value: unknown): string => {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableStringify(item)).join(",")}]`;
+  }
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, val]) => val !== undefined)
+    .sort(([a], [b]) => a.localeCompare(b));
+  const serialized = entries
+    .map(([key, val]) => `${JSON.stringify(key)}:${stableStringify(val)}`)
+    .join(",");
+  return `{${serialized}}`;
+};
+
+const computeKeyId = (publicKeyBase64: string) =>
+  crypto
+    .createHash("sha256")
+    .update(Buffer.from(publicKeyBase64, "base64"))
+    .digest("base64url");
+
+export const getFederationDiscoveryDocument = (): FederationDiscoveryDocument => {
+  const host = getServerHost();
+  const keyPair = getFederationKeyPair();
+  const generatedAt = new Date().toISOString();
+  const doc = {
+    host,
+    version: 1,
+    inbox_url: "/api/federation/incoming",
+    receipts_url: "/api/federation/receipts",
+    directory_url: "/directory",
+    keys: [
+      {
+        kid: keyPair.keyId,
+        public_key: keyPair.publicKeyBase64,
+        status: "active" as const,
+        created_at: keyPair.createdAt,
+        expires_at: null,
+      },
+    ],
+    generated_at: generatedAt,
+  };
+  const signature = signFederationPayload(stableStringify(doc));
+  return {
+    ...doc,
+    signature,
+    signature_kid: keyPair.keyId,
   };
 };
 
@@ -308,6 +557,203 @@ const createPublicKeyFromBase64 = (publicKey: string) =>
     type: "spki",
   });
 
+const selectActiveKey = (
+  keys: FederationDiscoveryKey[]
+): FederationDiscoveryKey | null => {
+  const active = keys.find((key) => key.status === "active");
+  return active ?? keys[0] ?? null;
+};
+
+const isDiscoveryHostValid = (
+  normalizedHost: string,
+  doc: FederationDiscoveryDocument
+) => {
+  if (normalizeHost(doc.host) !== normalizedHost) {
+    return false;
+  }
+  const urls = [doc.inbox_url, doc.receipts_url, doc.directory_url];
+  for (const url of urls) {
+    if (!url) {
+      return false;
+    }
+    if (!url.startsWith("http")) {
+      continue;
+    }
+    try {
+      const parsed = new URL(url);
+      if (normalizeHost(parsed.host) !== normalizedHost) {
+        return false;
+      }
+    } catch {
+      return false;
+    }
+  }
+  return true;
+};
+
+const verifyDiscoverySignature = (
+  doc: FederationDiscoveryDocument,
+  publicKeyBase64: string
+) => {
+  if (!doc.signature) {
+    return false;
+  }
+  const unsigned = {
+    host: doc.host,
+    version: doc.version,
+    inbox_url: doc.inbox_url,
+    receipts_url: doc.receipts_url,
+    directory_url: doc.directory_url,
+    keys: doc.keys,
+    generated_at: doc.generated_at,
+  };
+  return verifyFederationPayload(
+    stableStringify(unsigned),
+    doc.signature,
+    createPublicKeyFromBase64(publicKeyBase64)
+  );
+};
+
+const recordTrust = (
+  normalizedHost: string,
+  key: FederationDiscoveryKey,
+  verified: boolean
+) => {
+  const now = Date.now();
+  federationTrustStore.set(normalizedHost, {
+    host: normalizedHost,
+    kid: key.kid,
+    publicKey: key.public_key,
+    pinnedAt: now,
+    verifiedAt: verified ? now : 0,
+  });
+};
+
+const resolveTrustedKeyFromDiscovery = (
+  normalizedHost: string,
+  doc: FederationDiscoveryDocument
+): FederationDiscoveryKey | null => {
+  if (!doc.keys || doc.keys.length === 0) {
+    return null;
+  }
+  if (!doc.keys.some((key) => key.kid === doc.signature_kid)) {
+    return null;
+  }
+  const trust = federationTrustStore.get(normalizedHost);
+  const activeKey = selectActiveKey(doc.keys);
+  if (!activeKey) {
+    return null;
+  }
+  if (!trust) {
+    if (FEDERATION_TRUST_MODE === "strict") {
+      return null;
+    }
+    recordTrust(normalizedHost, activeKey, false);
+    return activeKey;
+  }
+  const verified = verifyDiscoverySignature(doc, trust.publicKey);
+  if (!verified) {
+    return null;
+  }
+  if (
+    trust.kid !== activeKey.kid ||
+    trust.publicKey !== activeKey.public_key
+  ) {
+    recordTrust(normalizedHost, activeKey, true);
+  } else {
+    trust.verifiedAt = Date.now();
+  }
+  return activeKey;
+};
+
+const getDiscoveryCacheEntry = (host: string) => {
+  const cached = federationDiscoveryCache.get(host);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached;
+  }
+  if (cached) {
+    federationDiscoveryCache.delete(host);
+  }
+  return null;
+};
+
+export const fetchFederationDiscovery = async (
+  senderHost: string
+): Promise<FederationDiscoveryDocument | null> => {
+  const normalizedHost = normalizeHost(senderHost);
+  if (!isValidHost(normalizedHost)) {
+    return null;
+  }
+  const cached = getDiscoveryCacheEntry(normalizedHost);
+  if (cached) {
+    return cached.doc;
+  }
+  if (!(await isFederationHostAllowed(normalizedHost))) {
+    return null;
+  }
+  const protocol = resolveFederationProtocol(senderHost, "callback");
+  const remoteUrl = `${protocol}://${senderHost}/.well-known/ratchet-chat/federation.json`;
+  let response: FederationRequestResult;
+  try {
+    response = await federationRequestJson(remoteUrl, {
+      method: "GET",
+      headers: { Accept: "application/json" },
+    });
+  } catch {
+    return null;
+  }
+  if (!response.ok || !response.json || typeof response.json !== "object") {
+    return null;
+  }
+  const doc = response.json as FederationDiscoveryDocument;
+  if (
+    !doc.host ||
+    !doc.inbox_url ||
+    !doc.receipts_url ||
+    !doc.directory_url ||
+    !Array.isArray(doc.keys) ||
+    !doc.signature ||
+    !doc.signature_kid
+  ) {
+    return null;
+  }
+  if (!isDiscoveryHostValid(normalizedHost, doc)) {
+    return null;
+  }
+  const trustedKey = resolveTrustedKeyFromDiscovery(normalizedHost, doc);
+  if (!trustedKey) {
+    return null;
+  }
+  federationDiscoveryCache.set(normalizedHost, {
+    doc,
+    expiresAt: Date.now() + FEDERATION_DISCOVERY_TTL_MS,
+  });
+  return doc;
+};
+
+export const resolveFederationEndpoint = async (
+  targetHost: string,
+  endpoint: "inbox" | "receipts" | "directory"
+): Promise<string | null> => {
+  const doc = await fetchFederationDiscovery(targetHost);
+  const protocol = resolveFederationProtocol(targetHost);
+  const hostPrefix = `${protocol}://${targetHost}`;
+  if (!doc) {
+    return null;
+  }
+  const raw =
+    endpoint === "inbox"
+      ? doc.inbox_url
+      : endpoint === "receipts"
+        ? doc.receipts_url
+        : doc.directory_url;
+  if (raw.startsWith("http")) {
+    return raw;
+  }
+  const normalized = raw.startsWith("/") ? raw : `/${raw}`;
+  return `${hostPrefix}${normalized}`;
+};
+
 export const fetchFederationKey = async (
   senderHost: string
 ): Promise<FederationKeyEntry | null> => {
@@ -316,9 +762,31 @@ export const fetchFederationKey = async (
     return null;
   }
   const cached = federationKeyCache.get(normalizedHost);
-  if (cached) {
+  if (cached && cached.expiresAt > Date.now()) {
     return cached;
   }
+  if (cached) {
+    federationKeyCache.delete(normalizedHost);
+  }
+  if (!(await isFederationHostAllowed(normalizedHost))) {
+    return null;
+  }
+
+  const discoveryDoc = await fetchFederationDiscovery(senderHost);
+  if (discoveryDoc) {
+    const activeKey = selectActiveKey(discoveryDoc.keys);
+    if (activeKey?.public_key) {
+      const entry: FederationKeyEntry = {
+        host: normalizedHost,
+        publicKey: activeKey.public_key,
+        key: createPublicKeyFromBase64(activeKey.public_key),
+        expiresAt: Date.now() + FEDERATION_KEY_TTL_MS,
+      };
+      federationKeyCache.set(normalizedHost, entry);
+      return entry;
+    }
+  }
+
   const protocol = resolveFederationProtocol(senderHost, "callback");
   const remoteUrl = `${protocol}://${senderHost}/api/federation/key`;
   let response: FederationRequestResult;
@@ -337,10 +805,27 @@ export const fetchFederationKey = async (
   if (!data?.publicKey || typeof data.publicKey !== "string") {
     return null;
   }
+  const kid = computeKeyId(data.publicKey);
+  if (!federationTrustStore.has(normalizedHost)) {
+    if (FEDERATION_TRUST_MODE === "strict") {
+      return null;
+    }
+    recordTrust(
+      normalizedHost,
+      { kid, public_key: data.publicKey, status: "active" },
+      false
+    );
+  } else {
+    const trust = federationTrustStore.get(normalizedHost);
+    if (trust && trust.publicKey !== data.publicKey) {
+      return null;
+    }
+  }
   const entry: FederationKeyEntry = {
     host: normalizedHost,
     publicKey: data.publicKey,
     key: createPublicKeyFromBase64(data.publicKey),
+    expiresAt: Date.now() + FEDERATION_KEY_TTL_MS,
   };
   federationKeyCache.set(normalizedHost, entry);
   return entry;

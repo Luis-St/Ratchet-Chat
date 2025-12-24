@@ -39,7 +39,7 @@ import {
 } from "@/components/ui/tooltip"
 import { useAuth } from "@/context/AuthContext"
 import { useRatchetSync } from "@/hooks/useRatchetSync"
-import { apiFetch } from "@/lib/api"
+import { apiFetch, getAuthToken } from "@/lib/api"
 import {
   decryptString,
   buildMessageSignaturePayload,
@@ -683,16 +683,19 @@ export function DashboardLayout() {
           return next
         })
         setActiveId(nextContact.handle)
-        void logClientEvent({
-          level: "info",
-          event: "contact.start_chat",
-          payload: {
-            handle: nextContact.handle,
-            host: nextContact.host,
-            has_identity_key: Boolean(nextContact.publicIdentityKey),
-            has_transport_key: Boolean(nextContact.publicTransportKey),
+        void logClientEvent(
+          {
+            level: "info",
+            event: "contact.start_chat",
+            payload: {
+              handle: nextContact.handle,
+              host: nextContact.host,
+              has_identity_key: Boolean(nextContact.publicIdentityKey),
+              has_transport_key: Boolean(nextContact.publicTransportKey),
+            },
           },
-        })
+          getAuthToken() ?? undefined
+        )
       } catch (error) {
         setStartError(
           error instanceof Error ? error.message : "Unable to start chat"
@@ -740,17 +743,20 @@ export function DashboardLayout() {
         payload,
         activeContact.publicTransportKey
       )
-      void logClientEvent({
-        level: "info",
-        event: "message.send.prepared",
-        payload: {
-          recipient_handle: activeContact.handle,
-          sender_handle: user.handle,
-          message_id: messageId,
-          content_length: trimmed.length,
-          encrypted_blob_length: encryptedBlob.length,
+      void logClientEvent(
+        {
+          level: "info",
+          event: "message.send.prepared",
+          payload: {
+            recipient_handle: activeContact.handle,
+            sender_handle: user.handle,
+            message_id: messageId,
+            content_length: trimmed.length,
+            encrypted_blob_length: encryptedBlob.length,
+          },
         },
-      })
+        getAuthToken() ?? undefined
+      )
       const localPayload = JSON.stringify({
         text: trimmed,
         peerHandle: activeContact.handle,
@@ -799,15 +805,18 @@ export function DashboardLayout() {
           sender_vault_signature_verified: true,
         },
       })
-      void logClientEvent({
-        level: "info",
-        event: "message.send.sent",
-        payload: {
-          recipient_handle: activeContact.handle,
-          message_id: messageId,
-          sender_vault_stored: Boolean(sendResponse?.sender_vault_stored),
+      void logClientEvent(
+        {
+          level: "info",
+          event: "message.send.sent",
+          payload: {
+            recipient_handle: activeContact.handle,
+            message_id: messageId,
+            sender_vault_stored: Boolean(sendResponse?.sender_vault_stored),
+          },
         },
-      })
+        getAuthToken() ?? undefined
+      )
       const vaultStored = Boolean(sendResponse?.sender_vault_stored)
       await db.messages.update(messageId, {
         receiptStatus: "DELIVERED_TO_SERVER",
@@ -826,14 +835,18 @@ export function DashboardLayout() {
       )
       setComposeText("")
     } catch (error) {
-      void logClientEvent({
-        level: "error",
-        event: "message.send.failed",
-        payload: {
-          recipient_handle: activeContact?.handle,
-          error: error instanceof Error ? error.message : "Unable to send message",
+      void logClientEvent(
+        {
+          level: "error",
+          event: "message.send.failed",
+          payload: {
+            recipient_handle: activeContact?.handle,
+            error:
+              error instanceof Error ? error.message : "Unable to send message",
+          },
         },
-      })
+        getAuthToken() ?? undefined
+      )
       setSendError(
         error instanceof Error ? error.message : "Unable to send message"
       )

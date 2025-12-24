@@ -5,29 +5,122 @@ import jwt from "jsonwebtoken";
 import { z } from "zod";
 
 import { getJwtSecret } from "../middleware/auth";
+import { createRateLimiter } from "../middleware/rateLimit";
+import { computeServerSession, generateServerEphemeral, srp } from "../lib/srp";
+
+const KDF_ITERATIONS_MIN = Number(process.env.KDF_ITERATIONS_MIN ?? 300000);
+const KDF_ITERATIONS_MAX = Number(process.env.KDF_ITERATIONS_MAX ?? 1000000);
+const SRP_SESSION_TTL_MS = Number(process.env.SRP_SESSION_TTL_MS ?? 5 * 60 * 1000);
+const LOGIN_BACKOFF_BASE_MS = Number(
+  process.env.LOGIN_BACKOFF_BASE_MS ?? 1000
+);
+const LOGIN_BACKOFF_MAX_MS = Number(
+  process.env.LOGIN_BACKOFF_MAX_MS ?? 10 * 60 * 1000
+);
 
 const registerSchema = z.object({
   username: z.string().min(3).max(64),
-  auth_hash: z.string().min(1),
-  auth_salt: z.string().min(1),
-  auth_iterations: z.number().int().positive(),
   kdf_salt: z.string().min(1),
-  kdf_iterations: z.number().int().positive(),
+  kdf_iterations: z
+    .number()
+    .int()
+    .min(KDF_ITERATIONS_MIN)
+    .max(KDF_ITERATIONS_MAX),
   public_identity_key: z.string().min(1),
   public_transport_key: z.string().min(1),
   encrypted_identity_key: z.string().min(1),
   encrypted_identity_iv: z.string().min(1),
   encrypted_transport_key: z.string().min(1),
   encrypted_transport_iv: z.string().min(1),
+  srp_salt: z.string().min(1),
+  srp_verifier: z.string().min(1),
 });
 
-const loginSchema = z.object({
+const srpStartSchema = z.object({
   username: z.string().min(3).max(64),
-  auth_hash: z.string().min(1),
+  A: z.string().min(1),
 });
+
+const srpVerifySchema = z.object({
+  username: z.string().min(3).max(64),
+  A: z.string().min(1),
+  M1: z.string().min(1),
+});
+
+type SrpSession = {
+  username: string;
+  A: string;
+  b: bigint;
+  BBytes: Buffer;
+  verifier: string;
+  expiresAt: number;
+};
+
+type BackoffEntry = {
+  failures: number;
+  blockedUntil: number;
+};
+
+const srpSessions = new Map<string, SrpSession>();
+const loginBackoff = new Map<string, BackoffEntry>();
+
+const sessionKey = (username: string, A: string) => `${username}:${A}`;
+
+const cleanupSessions = (now: number) => {
+  for (const [key, session] of srpSessions) {
+    if (session.expiresAt <= now) {
+      srpSessions.delete(key);
+    }
+  }
+};
+
+const getBackoffKey = (req: Request, username: string) => {
+  const ip = req.ip ?? "";
+  return `${username}:${ip}`;
+};
+
+const isBlocked = (key: string) => {
+  const entry = loginBackoff.get(key);
+  if (!entry) {
+    return { blocked: false, retryAfter: 0 };
+  }
+  const now = Date.now();
+  if (entry.blockedUntil <= now) {
+    return { blocked: false, retryAfter: 0 };
+  }
+  return {
+    blocked: true,
+    retryAfter: Math.max(1, Math.ceil((entry.blockedUntil - now) / 1000)),
+  };
+};
+
+const recordFailure = (key: string) => {
+  const now = Date.now();
+  const entry = loginBackoff.get(key) ?? { failures: 0, blockedUntil: 0 };
+  const failures = entry.failures + 1;
+  const delay = Math.min(
+    LOGIN_BACKOFF_BASE_MS * 2 ** Math.max(0, failures - 1),
+    LOGIN_BACKOFF_MAX_MS
+  );
+  loginBackoff.set(key, {
+    failures,
+    blockedUntil: now + delay,
+  });
+};
+
+const resetFailures = (key: string) => {
+  loginBackoff.delete(key);
+};
 
 export const createAuthRouter = (prisma: PrismaClient) => {
   const router = Router();
+  const authLimiter = createRateLimiter({
+    windowMs: Number(process.env.AUTH_RATE_LIMIT_WINDOW_MS ?? 60000),
+    max: Number(process.env.AUTH_RATE_LIMIT_MAX ?? 20),
+    keyPrefix: "auth",
+  });
+
+  router.use(authLimiter);
 
   router.get("/params/:username", async (req: Request, res: Response) => {
     const { username } = req.params;
@@ -41,8 +134,6 @@ export const createAuthRouter = (prisma: PrismaClient) => {
     const user = await prisma.user.findUnique({
       where: { username },
       select: {
-        auth_salt: true,
-        auth_iterations: true,
         kdf_salt: true,
         kdf_iterations: true,
       },
@@ -63,9 +154,6 @@ export const createAuthRouter = (prisma: PrismaClient) => {
 
     const {
       username,
-      auth_hash,
-      auth_salt,
-      auth_iterations,
       kdf_salt,
       kdf_iterations,
       public_identity_key,
@@ -74,6 +162,8 @@ export const createAuthRouter = (prisma: PrismaClient) => {
       encrypted_identity_iv,
       encrypted_transport_key,
       encrypted_transport_iv,
+      srp_salt,
+      srp_verifier,
     } = parsed.data;
     if (username.includes("@")) {
       return res.status(400).json({ error: "Username must be local" });
@@ -90,9 +180,6 @@ export const createAuthRouter = (prisma: PrismaClient) => {
     const user = await prisma.user.create({
       data: {
         username,
-        auth_hash,
-        auth_salt,
-        auth_iterations,
         kdf_salt,
         kdf_iterations,
         public_identity_key,
@@ -101,6 +188,8 @@ export const createAuthRouter = (prisma: PrismaClient) => {
         encrypted_identity_iv,
         encrypted_transport_key,
         encrypted_transport_iv,
+        srp_salt,
+        srp_verifier,
       },
       select: {
         id: true,
@@ -114,22 +203,116 @@ export const createAuthRouter = (prisma: PrismaClient) => {
     return res.status(201).json({ user });
   });
 
-  router.post("/login", async (req: Request, res: Response) => {
-    const parsed = loginSchema.safeParse(req.body);
+  router.post("/login", async (_req: Request, res: Response) => {
+    return res.status(410).json({ error: "Use SRP login endpoints" });
+  });
+
+  router.post("/srp/start", async (req: Request, res: Response) => {
+    const parsed = srpStartSchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ error: "Invalid request" });
     }
-
-    const { username, auth_hash } = parsed.data;
+    const { username, A } = parsed.data;
     if (username.includes("@")) {
       return res.status(400).json({ error: "Username must be local" });
     }
-    const user = await prisma.user.findUnique({ where: { username } });
-    if (!user) {
+    const backoffKey = getBackoffKey(req, username);
+    const blocked = isBlocked(backoffKey);
+    if (blocked.blocked) {
+      res.setHeader("Retry-After", blocked.retryAfter.toString());
+      return res.status(429).json({ error: "Retry later" });
+    }
+
+    let AInt: bigint;
+    try {
+      AInt = srp.toBigInt(Buffer.from(A, "base64"));
+    } catch {
+      recordFailure(backoffKey);
+      return res.status(400).json({ error: "Invalid SRP parameters" });
+    }
+    if (AInt % srp.N === 0n) {
+      recordFailure(backoffKey);
+      return res.status(400).json({ error: "Invalid SRP parameters" });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { username },
+      select: {
+        id: true,
+        srp_salt: true,
+        srp_verifier: true,
+      },
+    });
+    if (!user?.srp_salt || !user.srp_verifier) {
+      recordFailure(backoffKey);
       return res.status(401).json({ error: "Invalid credentials" });
     }
 
-    if (user.auth_hash !== auth_hash) {
+    cleanupSessions(Date.now());
+    const { b, B, BBytes } = generateServerEphemeral(user.srp_verifier);
+    const expiresAt = Date.now() + SRP_SESSION_TTL_MS;
+    srpSessions.set(sessionKey(username, A), {
+      username,
+      A,
+      b,
+      BBytes,
+      verifier: user.srp_verifier,
+      expiresAt,
+    });
+
+    return res.json({
+      salt: user.srp_salt,
+      B,
+    });
+  });
+
+  router.post("/srp/verify", async (req: Request, res: Response) => {
+    const parsed = srpVerifySchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Invalid request" });
+    }
+    const { username, A, M1 } = parsed.data;
+    if (username.includes("@")) {
+      return res.status(400).json({ error: "Username must be local" });
+    }
+    const backoffKey = getBackoffKey(req, username);
+    const blocked = isBlocked(backoffKey);
+    if (blocked.blocked) {
+      res.setHeader("Retry-After", blocked.retryAfter.toString());
+      return res.status(429).json({ error: "Retry later" });
+    }
+
+    const key = sessionKey(username, A);
+    const session = srpSessions.get(key);
+    if (!session || session.expiresAt <= Date.now()) {
+      recordFailure(backoffKey);
+      srpSessions.delete(key);
+      return res.status(400).json({ error: "SRP session expired" });
+    }
+
+    const serverSession = computeServerSession(
+      A,
+      session.BBytes,
+      session.b,
+      session.verifier
+    );
+    if (!serverSession) {
+      recordFailure(backoffKey);
+      srpSessions.delete(key);
+      return res.status(401).json({ error: "Invalid credentials" });
+    }
+
+    if (serverSession.M1 !== M1) {
+      recordFailure(backoffKey);
+      srpSessions.delete(key);
+      return res.status(401).json({ error: "Invalid credentials" });
+    }
+
+    srpSessions.delete(key);
+    resetFailures(backoffKey);
+
+    const user = await prisma.user.findUnique({ where: { username } });
+    if (!user) {
       return res.status(401).json({ error: "Invalid credentials" });
     }
 
@@ -146,6 +329,7 @@ export const createAuthRouter = (prisma: PrismaClient) => {
 
     return res.json({
       token,
+      M2: serverSession.M2,
       keys: {
         encrypted_identity_key: user.encrypted_identity_key,
         encrypted_identity_iv: user.encrypted_identity_iv,

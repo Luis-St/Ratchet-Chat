@@ -210,21 +210,27 @@ export function useRatchetSync() {
   const processSingleQueueItem = React.useCallback(
     async (item: QueueItem) => {
       console.log("[processSingleQueueItem] Starting processing for:", item.id)
-      void logClientEvent({
-        level: "info",
-        event: "queue.item.received",
-        payload: item,
-      })
+      void logClientEvent(
+        {
+          level: "info",
+          event: "queue.item.received",
+          payload: item,
+        },
+        getAuthToken() ?? undefined
+      )
       if (!masterKey || !transportPrivateKey) {
         console.warn("[processSingleQueueItem] Missing keys, aborting.")
-        void logClientEvent({
-          level: "warn",
-          event: "queue.item.skipped",
-          payload: {
-            id: item.id,
-            reason: "missing_keys",
+        void logClientEvent(
+          {
+            level: "warn",
+            event: "queue.item.skipped",
+            payload: {
+              id: item.id,
+              reason: "missing_keys",
+            },
           },
-        })
+          getAuthToken() ?? undefined
+        )
         return
       }
 
@@ -236,14 +242,17 @@ export function useRatchetSync() {
         )
       } catch (e) {
         console.error("[processSingleQueueItem] Decrypt error:", e)
-        void logClientEvent({
-          level: "error",
-          event: "queue.item.decrypt_error",
-          payload: {
-            id: item.id,
-            sender_handle: item.sender_handle,
+        void logClientEvent(
+          {
+            level: "error",
+            event: "queue.item.decrypt_error",
+            payload: {
+              id: item.id,
+              sender_handle: item.sender_handle,
+            },
           },
-        })
+          getAuthToken() ?? undefined
+        )
         return
       }
 
@@ -318,17 +327,20 @@ export function useRatchetSync() {
 
       if (!authenticityVerified) {
         console.warn("[processSingleQueueItem] Message verification failed. Rejecting.", item.id)
-        void logClientEvent({
-          level: "warn",
-          event: "queue.item.verification_failed",
-          payload: {
-            id: item.id,
-            sender_handle: item.sender_handle,
-            message_id: payloadMessageId,
-            signature_verified: signatureVerified,
-            handle_matches_queue: handleMatchesQueue,
+        void logClientEvent(
+          {
+            level: "warn",
+            event: "queue.item.verification_failed",
+            payload: {
+              id: item.id,
+              sender_handle: item.sender_handle,
+              message_id: payloadMessageId,
+              signature_verified: signatureVerified,
+              handle_matches_queue: handleMatchesQueue,
+            },
           },
-        })
+          getAuthToken() ?? undefined
+        )
         return
       }
 
@@ -369,15 +381,18 @@ export function useRatchetSync() {
         )
       } catch (e) {
         console.error("[processSingleQueueItem] Store API error:", e)
-        void logClientEvent({
-          level: "error",
-          event: "queue.item.store_error",
-          payload: {
-            id: item.id,
-            sender_handle: item.sender_handle,
-            message_id: payloadMessageId,
+        void logClientEvent(
+          {
+            level: "error",
+            event: "queue.item.store_error",
+            payload: {
+              id: item.id,
+              sender_handle: item.sender_handle,
+              message_id: payloadMessageId,
+            },
           },
-        })
+          getAuthToken() ?? undefined
+        )
         return
       }
 
@@ -403,16 +418,19 @@ export function useRatchetSync() {
         createdAt: stored.created_at ?? item.created_at,
       })
 
-      void logClientEvent({
-        level: "info",
-        event: "message.stored.local",
-        payload: {
-          id: stored.id,
-          sender_handle: stored.original_sender_handle ?? item.sender_handle,
-          message_id: payloadMessageId,
-          created_at: stored.created_at ?? item.created_at,
+      void logClientEvent(
+        {
+          level: "info",
+          event: "message.stored.local",
+          payload: {
+            id: stored.id,
+            sender_handle: stored.original_sender_handle ?? item.sender_handle,
+            message_id: payloadMessageId,
+            created_at: stored.created_at ?? item.created_at,
+          },
         },
-      })
+        getAuthToken() ?? undefined
+      )
 
       try {
         await apiFetch("/receipts", {
@@ -423,26 +441,32 @@ export function useRatchetSync() {
             type: "PROCESSED_BY_CLIENT",
           },
         })
-        void logClientEvent({
-          level: "info",
-          event: "receipt.sent",
-          payload: {
-            recipient_handle: item.sender_handle,
-            message_id: payloadMessageId ?? item.id,
-            type: "PROCESSED_BY_CLIENT",
+        void logClientEvent(
+          {
+            level: "info",
+            event: "receipt.sent",
+            payload: {
+              recipient_handle: item.sender_handle,
+              message_id: payloadMessageId ?? item.id,
+              type: "PROCESSED_BY_CLIENT",
+            },
           },
-        })
+          getAuthToken() ?? undefined
+        )
       } catch {
         // Receipts are best-effort.
-        void logClientEvent({
-          level: "warn",
-          event: "receipt.send_failed",
-          payload: {
-            recipient_handle: item.sender_handle,
-            message_id: payloadMessageId ?? item.id,
-            type: "PROCESSED_BY_CLIENT",
+        void logClientEvent(
+          {
+            level: "warn",
+            event: "receipt.send_failed",
+            payload: {
+              recipient_handle: item.sender_handle,
+              message_id: payloadMessageId ?? item.id,
+              type: "PROCESSED_BY_CLIENT",
+            },
           },
-        })
+          getAuthToken() ?? undefined
+        )
       }
       
       console.log("[processSingleQueueItem] Done. Triggering sync update.")

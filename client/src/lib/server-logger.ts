@@ -12,8 +12,6 @@ const MAX_STRING_LENGTH = Number(
 
 const SENSITIVE_KEYS = new Set([
   "password",
-  "auth_hash",
-  "auth_salt",
   "kdf_salt",
   "encrypted_identity_key",
   "encrypted_transport_key",

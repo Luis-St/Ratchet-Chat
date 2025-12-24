@@ -20,6 +20,8 @@ services:
       PORT: 3000
       SERVER_HOST: ${SERVER_HOST:-localhost:3000}
       DATABASE_URL: ${DATABASE_URL:-postgresql://ratchet:ratchet_password@db:5432/ratchet_chat}
+      JWT_SECRET: ${JWT_SECRET:-change-me}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3001}
       LOG_DIR: /data/logs
       SERVER_CERT_PATH: /data/.cert
     volumes:
@@ -42,6 +44,7 @@ services:
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3000}
       NEXT_PUBLIC_API_HOST: ${NEXT_PUBLIC_API_HOST:-localhost:3000}
       NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3001}
+      JWT_SECRET: ${JWT_SECRET:-change-me}
       CLIENT_LOG_DIR: /data/logs
     volumes:
       - client-data:/data

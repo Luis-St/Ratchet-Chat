@@ -10,12 +10,14 @@ where it is applied, and what data is stored*.
   not see plaintext messages or private keys.
 - Clients are responsible for encrypting, decrypting, and signing messages.
 - Transport security (HTTPS/TLS) is expected in production deployments.
+- Servers are deployed with a strict CORS allowlist so only the trusted client
+  origin can use browser APIs.
 
 ## Cryptographic primitives (summary)
 
 | Area | Algorithm | Purpose | Location |
 | --- | --- | --- | --- |
-| Password auth hash | PBKDF2-HMAC-SHA256 | Derive `auth_hash` for server login | Client (`/auth/register`, `/auth/login`) |
+| SRP-6a | SHA-256 + modular exponentiation | Zero-knowledge password auth | Client/Server (`/auth/srp/*`) |
 | Master key KDF | PBKDF2-HMAC-SHA256 | Derive `masterKey` for local encryption | Client |
 | Message signatures | Ed25519 (tweetnacl) | Sender authenticity | Client |
 | Transit encryption | AES-256-GCM | Encrypt message payload during transit | Client |
@@ -40,14 +42,25 @@ where it is applied, and what data is stored*.
 
 ### Password-derived keys
 
-- **Auth hash (`auth_hash`)**: derived with PBKDF2 using `auth_salt` and
-  `auth_iterations` (client-supplied). The server stores the hash and compares
-  it during login. The server never receives the plaintext password.
+- **SRP verifier (`srp_verifier`)**: computed client-side from the password and
+  `srp_salt` using SRP-6a. The server stores the verifier and never receives the
+  plaintext password.
+- The server enforces minimum and maximum iteration counts for `kdf_iterations`
+  to prevent weak client-supplied parameters.
 - **Master key (`masterKey`)**: derived with PBKDF2 using `kdf_salt` and
   `kdf_iterations`. Used to encrypt private keys and local message storage
   (MessageVault).
 - The master key is kept in memory and cached in `sessionStorage` for the active
   session. It is not sent to the server.
+
+### SRP login flow (high level)
+
+- Client generates ephemeral `A` and sends it to `/auth/srp/start`.
+- Server returns `salt` and ephemeral `B`.
+- Client computes proof `M1` from the password without revealing it and sends
+  it to `/auth/srp/verify`.
+- Server verifies `M1`, returns JWT + `M2`.
+- Client verifies `M2` to confirm the server knows the verifier.
 
 ### Federation keys (server-side)
 
@@ -55,6 +68,7 @@ where it is applied, and what data is stored*.
 - Keys are stored in an env-like `.cert` file (`SERVER_CERT_PATH`), with:
   - `SERVER_PRIVATE_KEY` (PKCS8 DER, Base64)
   - `SERVER_PUBLIC_KEY` (SPKI DER, Base64)
+- The `.cert` file is written with `0600` permissions and corrected on load.
 - The public key is exposed at `GET /api/federation/key` for callback
   verification.
 
@@ -106,6 +120,23 @@ Federation uses signed requests plus callback verification:
   `GET https://<senderHost>/api/federation/key` (forced HTTPS in production).
 - The recipient server also checks that `sender_handle` host matches
   `X-Ratchet-Host` to prevent spoofing.
+- The server rejects federation callbacks to private/reserved IPs in production
+  and can be constrained to an allowlist via `FEDERATION_ALLOWED_HOSTS`.
+- Federation requests are rate-limited and protected against replay using a
+  short-lived in-memory replay cache.
+- Federation public keys are cached with a TTL to allow key rotation.
+
+### Discovery and trust model
+
+- Servers publish a signed discovery document at
+  `/.well-known/ratchet-chat/federation.json` containing endpoints and public keys.
+- The document is signed with the current federation key (`signature` +
+  `signature_kid`).
+- Trust defaults to TOFU (trust-on-first-use): the first key is pinned per host,
+  and subsequent discovery docs must verify against the pinned key.
+- The allowlist (`FEDERATION_ALLOWED_HOSTS`) can be used to lock federation to
+  known hosts.
+- DNS pinning is optional and not required for the default TOFU flow.
 
 ## Transport security
 
@@ -115,17 +146,27 @@ Federation uses signed requests plus callback verification:
   localhost.
 - The server can optionally terminate TLS directly using `FEDERATION_TLS_*`
   environment variables, but is typically deployed behind a reverse proxy.
+- The server applies security headers (CSP, HSTS, nosniff, etc.) and uses a
+  strict CORS allowlist for browser traffic.
 
 ## Logging and redaction
 
-- Server and client logging redact sensitive fields (passwords, auth hashes,
-  private keys, tokens).
+- Server and client logging redact sensitive fields (passwords, private keys,
+  tokens).
 - Encrypted blobs and metadata may appear in logs; plaintext should not.
+- Client log ingestion requires JWT authentication in production and enforces
+  strict Origin checking and rate limits.
+
+## Abuse protection
+
+- Login attempts are rate-limited with exponential backoff on failures to slow
+  brute-force attempts.
+- Federation callbacks and auth endpoints are rate-limited per source.
 
 ## Data at rest
 
 - Database stores only encrypted message blobs and encrypted private keys.
-- Password-derived auth hashes are stored, not plaintext passwords.
+- SRP verifiers are stored, not plaintext passwords.
 - Federation keys are stored in `.cert`; protect the volume and file permissions.
 
 ## Security flow diagram (end-to-end)

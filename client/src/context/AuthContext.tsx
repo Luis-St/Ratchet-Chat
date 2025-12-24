@@ -10,7 +10,6 @@ import {
   bytesToBase64,
   decryptPrivateKey,
   deriveMasterKey,
-  deriveAuthHash,
   encryptPrivateKey,
   exportTransportPrivateKey,
   getSubtleCrypto,
@@ -21,14 +20,19 @@ import {
   type EncryptedPayload,
 } from "@/lib/crypto"
 import { getInstanceHost, normalizeHandle, splitHandle } from "@/lib/handles"
+import {
+  computeClientProof,
+  computeVerifier,
+  generateClientEphemeral,
+  generateSrpSalt,
+  verifyServerProof,
+} from "@/lib/srp"
 
 type StoredKeys = {
   username: string
   handle: string
   kdfSalt: string
   kdfIterations: number
-  authSalt: string
-  authIterations: number
   identityPrivateKey: EncryptedPayload
   transportPrivateKey: EncryptedPayload
   publicIdentityKey: string
@@ -229,9 +233,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const kdfSalt = generateSalt()
     const kdfIterations = 310_000
     const masterKey = await deriveMasterKey(password, kdfSalt, kdfIterations)
-    const authSalt = generateSalt()
-    const authIterations = 200_000
-    const authHash = await deriveAuthHash(password, authSalt, authIterations)
+    const srpSaltBytes = generateSrpSalt()
+    const srpSalt = bytesToBase64(srpSaltBytes)
+    const srpVerifier = await computeVerifier(username, password, srpSalt)
 
     const identityPair = await generateIdentityKeyPair()
     const transportPair = await generateTransportKeyPair()
@@ -252,9 +256,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       method: "POST",
       body: {
         username,
-        auth_hash: authHash,
-        auth_salt: bytesToBase64(authSalt),
-        auth_iterations: authIterations,
         kdf_salt: bytesToBase64(kdfSalt),
         kdf_iterations: kdfIterations,
         public_identity_key: identityPair.publicKey,
@@ -263,11 +264,30 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         encrypted_identity_iv: encryptedIdentity.iv,
         encrypted_transport_key: encryptedTransport.ciphertext,
         encrypted_transport_iv: encryptedTransport.iv,
+        srp_salt: srpSalt,
+        srp_verifier: srpVerifier,
       },
     })
 
+    const { A, a } = generateClientEphemeral()
+    const startResponse = await apiFetch<{ salt: string; B: string }>(
+      "/auth/srp/start",
+      {
+        method: "POST",
+        body: { username, A },
+      }
+    )
+    const proof = await computeClientProof({
+      username,
+      password,
+      saltBase64: startResponse.salt,
+      ABase64: A,
+      BBase64: startResponse.B,
+      a,
+    })
     const loginResponse = await apiFetch<{
       token: string
+      M2: string
       keys: {
         encrypted_identity_key: string
         encrypted_identity_iv: string
@@ -278,13 +298,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         public_identity_key: string
         public_transport_key: string
       }
-    }>("/auth/login", {
+    }>("/auth/srp/verify", {
       method: "POST",
       body: {
         username,
-        auth_hash: authHash,
+        A,
+        M1: proof.M1,
       },
     })
+    const ok = await verifyServerProof({
+      ABase64: A,
+      M1Base64: proof.M1,
+      key: proof.key,
+      M2Base64: loginResponse.M2,
+    })
+    if (!ok) {
+      throw new Error("Unable to verify server proof")
+    }
     
     setAuthToken(loginResponse.token)
 
@@ -294,8 +324,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       handle,
       kdfSalt: bytesToBase64(kdfSalt),
       kdfIterations,
-      authSalt: bytesToBase64(authSalt),
-      authIterations,
       identityPrivateKey: encryptedIdentity,
       transportPrivateKey: encryptedTransport,
       publicIdentityKey: identityPair.publicKey,
@@ -316,8 +344,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const login = React.useCallback(async (usernameInput: string, password: string) => {
     const { username, handle } = resolveLocalUser(usernameInput)
     const params = await apiFetch<{
-      auth_salt: string
-      auth_iterations: number
       kdf_salt: string
       kdf_iterations: number
     }>(`/auth/params/${encodeURIComponent(username)}`)
@@ -326,13 +352,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       base64ToBytes(params.kdf_salt),
       params.kdf_iterations
     )
-    const authHash = await deriveAuthHash(
-      password,
-      base64ToBytes(params.auth_salt),
-      params.auth_iterations
+    const { A, a } = generateClientEphemeral()
+    const startResponse = await apiFetch<{ salt: string; B: string }>(
+      "/auth/srp/start",
+      {
+        method: "POST",
+        body: { username, A },
+      }
     )
+    const proof = await computeClientProof({
+      username,
+      password,
+      saltBase64: startResponse.salt,
+      ABase64: A,
+      BBase64: startResponse.B,
+      a,
+    })
     const loginResponse = await apiFetch<{
       token: string
+      M2: string
       keys: {
         encrypted_identity_key: string
         encrypted_identity_iv: string
@@ -343,13 +381,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         public_identity_key: string
         public_transport_key: string
       }
-    }>("/auth/login", {
+    }>("/auth/srp/verify", {
       method: "POST",
       body: {
         username,
-        auth_hash: authHash,
+        A,
+        M1: proof.M1,
       },
     })
+    const verified = await verifyServerProof({
+      ABase64: A,
+      M1Base64: proof.M1,
+      key: proof.key,
+      M2Base64: loginResponse.M2,
+    })
+    if (!verified) {
+      throw new Error("Unable to verify server proof")
+    }
     
     const identityPrivateKey = await decryptPrivateKey(
       masterKey,
@@ -377,8 +425,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       handle,
       kdfSalt: params.kdf_salt,
       kdfIterations: params.kdf_iterations,
-      authSalt: params.auth_salt,
-      authIterations: params.auth_iterations,
       identityPrivateKey: {
         ciphertext: loginResponse.keys.encrypted_identity_key,
         iv: loginResponse.keys.encrypted_identity_iv,
