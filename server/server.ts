@@ -168,7 +168,7 @@ app.use(
     credentials: true,
   })
 );
-app.use(express.json({ limit: "2mb" }));
+app.use(express.json({ limit: "20mb" }));
 
 app.get("/.well-known/ratchet-chat/federation.json", (req, res) => {
   const doc = getFederationDiscoveryDocument();

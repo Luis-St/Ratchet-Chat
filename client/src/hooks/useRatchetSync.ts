@@ -17,6 +17,13 @@ import {
 import { splitHandle } from "@/lib/handles"
 import { db, type ReceiptStatus } from "@/lib/db"
 
+type Attachment = {
+  filename: string
+  mimeType: string
+  size: number
+  data: string
+}
+
 type QueueItem = {
   id: string
   recipient_id: string
@@ -39,6 +46,7 @@ type TransitPayload = {
   content?: string
   message?: string
   plaintext?: string
+  attachments?: Attachment[]
   senderSignature?: string
   sender_signature?: string
   senderIdentityKey?: string
@@ -306,6 +314,7 @@ export function useRatchetSync() {
         masterKey,
         JSON.stringify({
           text: payload.content,
+          attachments: payload.attachments,
           peerHandle: senderHandle,
           peerUsername: handleParts?.username,
           peerHost: handleParts?.host,

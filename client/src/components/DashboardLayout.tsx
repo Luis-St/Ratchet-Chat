@@ -5,6 +5,7 @@ import {
   Check,
   CheckCheck,
   Download,
+  FileIcon,
   Info,
   MoreVertical,
   Paperclip,
@@ -12,7 +13,11 @@ import {
   Send,
   ShieldCheck,
   Trash2,
+  X,
 } from "lucide-react"
+import TextareaAutosize from "react-textarea-autosize"
+import ReactMarkdown from "react-markdown"
+import remarkGfm from "remark-gfm"
 
 import { AppSidebar, type ConversationPreview } from "@/components/app-sidebar"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
@@ -56,6 +61,14 @@ import { normalizeHandle, splitHandle } from "@/lib/handles"
 import { db, type MessageRecord, type ContactRecord } from "@/lib/db"
 import { cn } from "@/lib/utils"
 import { RecipientInfoDialog } from "@/components/RecipientInfoDialog"
+import { ImagePreviewDialog } from "@/components/ImagePreviewDialog"
+
+type Attachment = {
+  filename: string
+  mimeType: string
+  size: number
+  data: string // Base64
+}
 
 type Contact = {
   handle: string
@@ -63,6 +76,7 @@ type Contact = {
   host: string
   publicIdentityKey: string
   publicTransportKey: string
+  createdAt?: string
 }
 
 type StoredMessage = {
@@ -74,6 +88,7 @@ type StoredMessage = {
   peerTransportKey?: string
   direction: "in" | "out"
   text: string
+  attachments?: Attachment[]
   timestamp: string
   verified: boolean
   isRead: boolean
@@ -112,6 +127,7 @@ async function decodeContactRecord(
       host: payload.host ?? parts?.host ?? "",
       publicIdentityKey: payload.publicIdentityKey ?? "",
       publicTransportKey: payload.publicTransportKey ?? "",
+      createdAt: record.createdAt,
     }
   } catch {
     return null
@@ -140,7 +156,7 @@ async function saveContactRecord(
       encrypted_blob: encrypted.ciphertext,
       iv: encrypted.iv,
     }),
-    createdAt: new Date().toISOString(),
+    createdAt: contact.createdAt || new Date().toISOString(),
   })
 }
 
@@ -159,6 +175,7 @@ async function decodeMessageRecord(
     let payload: {
       text?: string
       content?: string
+      attachments?: Attachment[]
       peerId?: string
       peerHandle?: string
       peerUsername?: string
@@ -197,6 +214,7 @@ async function decodeMessageRecord(
       peerTransportKey: payload.peerTransportKey,
       direction,
       text,
+      attachments: payload.attachments,
       timestamp: payload.timestamp ?? record.createdAt,
       verified: record.verified,
       isRead,
@@ -247,8 +265,11 @@ export function DashboardLayout() {
   const [highlightedMessageId, setHighlightedMessageId] = React.useState<string | null>(null)
   const [typingStatus, setTypingStatus] = React.useState<Record<string, boolean>>({})
   const [showRecipientInfo, setShowRecipientInfo] = React.useState(false)
+  const [attachment, setAttachment] = React.useState<{ name: string; type: string; size: number; data: string } | null>(null)
+  const [previewImage, setPreviewImage] = React.useState<string | null>(null)
   const scrollRef = React.useRef<HTMLDivElement>(null)
   const typingTimeoutRef = React.useRef<NodeJS.Timeout | null>(null)
+  const fileInputRef = React.useRef<HTMLInputElement>(null)
 
   // Listen for ephemeral signals (typing indicators)
   React.useEffect(() => {
@@ -319,7 +340,7 @@ export function DashboardLayout() {
     const query = sidebarSearchQuery.toLowerCase().trim()
     
     if (!query) {
-      return contacts.map((contact) => {
+      const list = contacts.map((contact) => {
         const thread = messagesByPeer.get(contact.handle) ?? []
         const lastMessage = thread[thread.length - 1]
         const isActive = contact.handle === activeId
@@ -332,12 +353,18 @@ export function DashboardLayout() {
           uid: contact.handle,
           name: contact.username,
           handle: contact.handle,
-          lastMessage: lastMessage?.text ?? "No messages yet",
+          lastMessage: lastMessage?.text || (lastMessage?.attachments?.length ? "📎 Attachment" : "No messages yet"),
           lastTimestamp: formatTimestamp(lastMessage?.timestamp ?? ""),
+          lastTimestampRaw: lastMessage?.timestamp || contact.createdAt || "",
           unread,
-          status: "offline",
+          status: "offline" as const,
         }
       })
+
+      // Sort by last activity (message timestamp or contact creation date)
+      return list
+        .sort((a, b) => b.lastTimestampRaw.localeCompare(a.lastTimestampRaw))
+        .map(({ lastTimestampRaw, ...conv }) => conv)
     }
 
     const results: ConversationPreview[] = []
@@ -361,10 +388,10 @@ export function DashboardLayout() {
         uid: contact.handle,
         name: contact.username,
         handle: contact.handle,
-        lastMessage: lastMessage?.text ?? "No messages yet",
+        lastMessage: lastMessage?.text || (lastMessage?.attachments?.length ? "📎 Attachment" : "No messages yet"),
         lastTimestamp: formatTimestamp(lastMessage?.timestamp ?? ""),
         unread,
-        status: "offline",
+        status: "offline" as const,
       })
     }
 
@@ -385,7 +412,7 @@ export function DashboardLayout() {
           lastMessage: msg.text,
           lastTimestamp: formatTimestamp(msg.timestamp),
           unread: 0, // Search results typically don't show unread counts for the message itself
-          status: "offline",
+          status: "offline" as const,
           foundMessageId: msg.id
         })
       }
@@ -534,6 +561,7 @@ export function DashboardLayout() {
             host: message.peerHost ?? parts?.host ?? "",
             publicIdentityKey: message.peerIdentityKey ?? "",
             publicTransportKey: message.peerTransportKey ?? "",
+            createdAt: message.timestamp,
           }
           next.push(contact)
           pendingSaves.push(contact)
@@ -737,6 +765,7 @@ export function DashboardLayout() {
           host: handleParts.host,
           publicIdentityKey: entry.public_identity_key,
           publicTransportKey: entry.public_transport_key,
+          createdAt: new Date().toISOString(),
         }
         if (masterKey && user?.handle) {
           const ownerId = user.id ?? user.handle
@@ -773,9 +802,32 @@ export function DashboardLayout() {
     [masterKey, user]
   )
 
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    if (file.size > 10 * 1024 * 1024) {
+      setSendError("File too large (max 10MB)")
+      return
+    }
+    const reader = new FileReader()
+    reader.onload = () => {
+      const dataUrl = reader.result as string
+      // Extract base64 data (remove "data:mime/type;base64,")
+      const base64 = dataUrl.split(",")[1]
+      setAttachment({
+        name: file.name,
+        type: file.type,
+        size: file.size,
+        data: base64
+      })
+      setSendError(null)
+    }
+    reader.readAsDataURL(file)
+  }
+
   const handleSend = React.useCallback(async () => {
     const trimmed = composeText.trim()
-    if (!trimmed) {
+    if (!trimmed && !attachment) {
       return
     }
     if (!activeContact || !masterKey || !identityPrivateKey) {
@@ -798,12 +850,21 @@ export function DashboardLayout() {
         buildMessageSignaturePayload(user.handle, trimmed, messageId),
         identityPrivateKey
       )
+      
+      const attachments = attachment ? [{
+        filename: attachment.name,
+        mimeType: attachment.type,
+        size: attachment.size,
+        data: attachment.data
+      }] : undefined
+
       const payload = JSON.stringify({
         content: trimmed,
         sender_handle: user.handle,
         sender_signature: signature,
         sender_identity_key: getIdentityPublicKey(identityPrivateKey),
         message_id: messageId,
+        attachments
       })
       const encryptedBlob = await encryptTransitEnvelope(
         payload,
@@ -811,6 +872,7 @@ export function DashboardLayout() {
       )
       const localPayload = JSON.stringify({
         text: trimmed,
+        attachments,
         peerHandle: activeContact.handle,
         peerUsername: activeContact.username,
         peerHost: activeContact.host,
@@ -874,6 +936,8 @@ export function DashboardLayout() {
         )
       )
       setComposeText("")
+      setAttachment(null)
+      if (fileInputRef.current) fileInputRef.current.value = ""
     } catch (error) {
       setSendError(
         error instanceof Error ? error.message : "Unable to send message"
@@ -881,7 +945,7 @@ export function DashboardLayout() {
     } finally {
       setIsBusy(false)
     }
-  }, [activeContact, composeText, identityPrivateKey, masterKey, user?.handle])
+  }, [activeContact, composeText, identityPrivateKey, masterKey, user?.handle, attachment])
 
   return (
     <TooltipProvider>
@@ -896,6 +960,11 @@ export function DashboardLayout() {
         contact={activeContact}
         open={showRecipientInfo}
         onOpenChange={setShowRecipientInfo}
+      />
+      <ImagePreviewDialog 
+        src={previewImage} 
+        open={!!previewImage} 
+        onOpenChange={(open) => !open && setPreviewImage(null)} 
       />
       <AppSidebar
         conversations={conversations}
@@ -1021,14 +1090,6 @@ export function DashboardLayout() {
                 const meta = formatTimestamp(message.timestamp)
                 const receiptStatus =
                   message.direction === "out" ? message.receiptStatus ?? null : null
-                const receiptLabel =
-                  receiptStatus === "DELIVERED_TO_SERVER"
-                    ? "sent"
-                    : receiptStatus === "PROCESSED_BY_CLIENT"
-                      ? "delivered"
-                      : receiptStatus === "READ_BY_USER"
-                    ? "read"
-                    : null
                 return (
                   <div
                     key={message.id}
@@ -1058,7 +1119,41 @@ export function DashboardLayout() {
                             : "bg-card dark:bg-muted text-foreground rounded-2xl rounded-bl-sm"
                         )}
                       >
-                        <p className="whitespace-pre-wrap">{message.text}</p>
+                        {message.attachments?.map((att, i) => (
+                          <div key={i} className="mb-2 rounded-lg overflow-hidden">
+                            {att.mimeType.startsWith("image/") ? (
+                              // eslint-disable-next-line @next/next/no-img-element
+                              <img 
+                                src={`data:${att.mimeType};base64,${att.data}`}
+                                alt={att.filename}
+                                className="max-w-full h-auto max-h-64 object-cover cursor-pointer hover:opacity-90 transition-opacity"
+                                onClick={() => setPreviewImage(`data:${att.mimeType};base64,${att.data}`)}
+                              />
+                            ) : (
+                              <a 
+                                href={`data:${att.mimeType};base64,${att.data}`}
+                                download={att.filename}
+                                className="flex items-center gap-2 p-3 bg-background/50 rounded-lg hover:bg-background/80 transition-colors"
+                              >
+                                <div className="p-2 bg-emerald-500/10 rounded-md">
+                                  <FileIcon className="h-5 w-5 text-emerald-600 dark:text-emerald-400" />
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <p className="font-medium truncate">{att.filename}</p>
+                                  <p className="text-xs text-muted-foreground">{(att.size / 1024).toFixed(1)} KB</p>
+                                </div>
+                                <Download className="h-4 w-4 text-muted-foreground" />
+                              </a>
+                            )}
+                          </div>
+                        ))}
+                        {message.text && (
+                          <div className="whitespace-pre-wrap prose prose-sm dark:prose-invert prose-emerald max-w-none prose-p:leading-relaxed prose-pre:bg-muted prose-pre:p-2 prose-pre:rounded-md prose-code:text-emerald-600 dark:prose-code:text-emerald-400">
+                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                              {message.text}
+                            </ReactMarkdown>
+                          </div>
+                        )}
                         <div className="mt-2 flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-muted-foreground">
                           <span>{meta}</span>
                           {message.verified && (
@@ -1096,7 +1191,7 @@ export function DashboardLayout() {
                             className="text-xs"
                           >
                             <div className="space-y-1">
-                              <p><span className="font-semibold">Status:</span> {receiptLabel ?? (message.direction === 'in' ? 'received' : 'sending...')}</p>
+                              <p><span className="font-semibold">Status:</span> {message.direction === 'out' && receiptStatus ? receiptStatus : (message.direction === 'in' ? 'received' : 'sending...')}</p>
                               <p><span className="font-semibold">Signature:</span> {message.verified ? 'Verified' : 'Unverified'}</p>
                               <p><span className="font-semibold">Time:</span> {new Date(message.timestamp).toLocaleString()}</p>
                               <p className="font-mono text-[9px] text-muted-foreground break-all">{message.id}</p>
@@ -1114,18 +1209,63 @@ export function DashboardLayout() {
         </div>
 
         <div className="flex-none border-t bg-background/80 px-5 py-4 backdrop-blur">
+          {attachment && (
+            <div className="mb-3 flex items-center justify-between rounded-lg border bg-card p-2 shadow-sm">
+              <div className="flex items-center gap-3">
+                {attachment.type.startsWith("image/") ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={`data:${attachment.type};base64,${attachment.data}`}
+                    alt="Preview"
+                    className="h-10 w-10 rounded-md object-cover"
+                  />
+                ) : (
+                  <div className="flex h-10 w-10 items-center justify-center rounded-md bg-muted">
+                    <FileIcon className="h-5 w-5 text-muted-foreground" />
+                  </div>
+                )}
+                <div className="flex flex-col">
+                  <span className="text-xs font-medium max-w-[200px] truncate">{attachment.name}</span>
+                  <span className="text-[10px] text-muted-foreground">{(attachment.size / 1024).toFixed(1)} KB</span>
+                </div>
+              </div>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                onClick={() => {
+                  setAttachment(null)
+                  if (fileInputRef.current) fileInputRef.current.value = ""
+                }}
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+          )}
           <Card className="border-border bg-card/90 shadow-sm">
-            <CardContent className="flex items-center gap-3 p-3">
-              <Button variant="ghost" size="icon" className="text-muted-foreground">
+            <CardContent className="flex items-end gap-3 p-3">
+              <input
+                type="file"
+                className="hidden"
+                ref={fileInputRef}
+                onChange={handleFileSelect}
+              />
+              <Button 
+                variant="ghost" 
+                size="icon" 
+                className="text-muted-foreground shrink-0 mb-1"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={!activeContact || isBusy}
+              >
                 <Paperclip />
               </Button>
-              <Input
+              <TextareaAutosize
                 placeholder={
                   activeContact
                     ? `Message ${activeContact.username}`
                     : "Select a chat to start messaging"
                 }
-                className="border-none bg-transparent shadow-none focus-visible:ring-0"
+                className="flex-1 min-h-[40px] max-h-[200px] w-full resize-none border-none bg-transparent py-2.5 px-0 text-sm shadow-none focus-visible:ring-0 outline-none"
                 value={composeText}
                 onChange={(event) => {
                   setComposeText(event.target.value)
@@ -1140,11 +1280,11 @@ export function DashboardLayout() {
                 disabled={!activeContact || isBusy}
               />
               <Button
-                className="bg-emerald-600 text-white hover:bg-emerald-600/90"
-                disabled={!activeContact || isBusy}
+                className="bg-emerald-600 text-white hover:bg-emerald-600/90 shrink-0 mb-1"
+                disabled={(!composeText.trim() && !attachment) || !activeContact || isBusy}
                 onClick={() => void handleSend()}
               >
-                <Send />
+                <Send className="h-4 w-4 mr-2" />
                 Send
               </Button>
             </CardContent>
