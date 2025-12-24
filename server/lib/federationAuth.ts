@@ -359,19 +359,30 @@ export const isFederationHostAllowed = async (
       return false;
     }
     for (const address of addresses) {
-      if (!allowPrivate) {
-        if (address.family === 4 && isPrivateIpv4(address.address)) {
-          return false;
-        }
-        if (address.family === 6 && isPrivateIpv6(address.address)) {
-          return false;
-        }
+      if (!validateIp(address.address, allowPrivate)) {
+        return false;
       }
     }
   } catch {
     return false;
   }
 
+  return true;
+};
+
+const validateIp = (ip: string, allowPrivate: boolean) => {
+  if (isIP(ip) === 0) {
+    return false;
+  }
+  if (allowPrivate) {
+    return true;
+  }
+  if (isPrivateIpv4(ip)) {
+    return false;
+  }
+  if (isPrivateIpv6(ip)) {
+    return false;
+  }
   return true;
 };
 
@@ -501,18 +512,48 @@ export const federationRequestJson = async (
     headers["Content-Length"] = Buffer.byteLength(payload).toString();
   }
 
-  const requestOptions: http.RequestOptions = {
-    method,
-    hostname: parsed.hostname,
-    port: parsed.port
-      ? Number(parsed.port)
-      : parsed.protocol === "https:"
-        ? 443
-        : 80,
-    path: `${parsed.pathname}${parsed.search}`,
-    headers,
-  };
-  const requestClient = parsed.protocol === "https:" ? https : http;
+  // Security: Resolve IP and validate to prevent DNS rebinding / SSRF.
+  const hostname = parsed.hostname;
+  let ip: string;
+  try {
+    if (isIP(hostname)) {
+      ip = hostname;
+    } else {
+      const addresses = await dns.lookup(hostname);
+      ip = addresses.address;
+    }
+  } catch {
+    return { ok: false, status: 502, error: "DNS lookup failed" };
+  }
+
+  const env = process.env.NODE_ENV ?? "development";
+  const allowPrivate =
+    env !== "production" || FEDERATION_ALLOW_PRIVATE_IPS;
+
+  if (isBlockedHostname(hostname)) {
+    if (!allowPrivate) return { ok: false, status: 403, error: "Host not allowed" };
+  }
+  
+  if (!validateIp(ip, allowPrivate)) {
+    return { ok: false, status: 403, error: "IP not allowed" };
+  }
+
+    // Force Host header to original hostname
+    headers["Host"] = hostname;
+  
+    const requestOptions: https.RequestOptions = {
+      method,
+      hostname: ip, // Use resolved IP
+      port: parsed.port
+        ? Number(parsed.port)
+        : parsed.protocol === "https:"
+          ? 443
+          : 80,
+      path: `${parsed.pathname}${parsed.search}`,
+      headers,
+      // For HTTPS, we must set servername for SNI since we are connecting to an IP
+      servername: hostname,
+    };  const requestClient = parsed.protocol === "https:" ? https : http;
 
   return await new Promise<FederationRequestResult>((resolve, reject) => {
     const req = requestClient.request(requestOptions, (res) => {
@@ -540,7 +581,8 @@ export const federationRequestJson = async (
     });
 
     req.on("error", (error) => {
-      reject(error);
+      // Don't reject, resolve with error to handle gracefully
+      resolve({ ok: false, status: 502, error: error.message });
     });
 
     if (payload) {
