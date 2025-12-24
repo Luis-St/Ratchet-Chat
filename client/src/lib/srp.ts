@@ -15,7 +15,10 @@ const N_HEX =
   "07A28FB5C55DF06F4C52C9DE2BCBF6955817183995497CEA956AE515D2261898F"
 
 const N = BigInt(`0x${N_HEX}`)
-const G = 2n
+const ZERO = BigInt(0)
+const ONE = BigInt(1)
+const TWO = BigInt(2)
+const G = TWO
 const N_BYTES = N_HEX.length / 2
 
 const concatBytes = (...chunks: Uint8Array[]) => {
@@ -55,14 +58,14 @@ const toBytes = (value: bigint, length = N_BYTES): Uint8Array => {
 }
 
 const modPow = (base: bigint, exp: bigint, mod: bigint): bigint => {
-  let result = 1n
+  let result = ONE
   let b = base % mod
   let e = exp
-  while (e > 0n) {
-    if (e & 1n) {
+  while (e > ZERO) {
+    if (e & ONE) {
       result = (result * b) % mod
     }
-    e >>= 1n
+    e >>= ONE
     b = (b * b) % mod
   }
   return result
@@ -135,18 +138,18 @@ export const computeClientProof = async (options: {
   const BBytes = base64ToBytes(BBase64)
   const A = toBigInt(ABytes)
   const B = toBigInt(BBytes)
-  if (A % N === 0n || B % N === 0n) {
+  if (A % N === ZERO || B % N === ZERO) {
     throw new Error("Invalid SRP parameters")
   }
   const k = await getK()
   const u = toBigInt(await sha256(toBytes(A), BBytes))
-  if (u === 0n) {
+  if (u === ZERO) {
     throw new Error("Invalid SRP parameters")
   }
   const x = await computeX(username, password, base64ToBytes(saltBase64))
   const gx = modPow(G, x, N)
   let base = (B - (k * gx) % N) % N
-  if (base < 0n) {
+  if (base < ZERO) {
     base = (base + N) % N
   }
   const exp = a + u * x
