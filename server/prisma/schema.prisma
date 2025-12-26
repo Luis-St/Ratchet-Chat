@@ -25,6 +25,24 @@ model User {
   created_at                 DateTime        @default(now())
   incoming_queue             IncomingQueue[] @relation("IncomingRecipient")
   vault_messages             MessageVault[]  @relation("VaultOwner")
+  sessions                   Session[]       @relation("UserSessions")
+}
+
+model Session {
+  id              String   @id @default(uuid()) @db.Uuid
+  user_id         String   @db.Uuid
+  token_hash      String   @unique
+  device_info     String?
+  ip_address      String?
+  created_at      DateTime @default(now())
+  last_active_at  DateTime @default(now())
+  expires_at      DateTime
+
+  user            User     @relation("UserSessions", fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([user_id])
+  @@index([expires_at])
+  @@index([token_hash])
 }
 
 model IncomingQueue {

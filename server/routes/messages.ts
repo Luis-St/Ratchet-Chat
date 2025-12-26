@@ -284,6 +284,19 @@ export const createMessagesRouter = (
       }
 
       const senderVaultStored = await storeSenderVault();
+
+      // Notify other devices of the sender about the outgoing message
+      if (senderVaultStored && sender_vault_blob && sender_vault_iv) {
+        io.to(req.user!.id).emit("OUTGOING_MESSAGE_SYNCED", {
+          message_id,
+          original_sender_handle: recipientParsed.handle,
+          encrypted_blob: sender_vault_blob,
+          iv: sender_vault_iv,
+          sender_signature_verified: sender_vault_signature_verified ?? true,
+          created_at: new Date().toISOString(),
+        });
+      }
+
       return res.status(202).json({
         recipient_handle: recipientParsed.handle,
         relayed: true,
@@ -350,6 +363,18 @@ export const createMessagesRouter = (
       created_at: queueItem.created.created_at.toISOString(),
     });
 
+    // Notify other devices of the sender about the outgoing message
+    if (queueItem.senderVaultStored && sender_vault_blob && sender_vault_iv) {
+      io.to(req.user!.id).emit("OUTGOING_MESSAGE_SYNCED", {
+        message_id,
+        original_sender_handle: recipientParsed.handle,
+        encrypted_blob: sender_vault_blob,
+        iv: sender_vault_iv,
+        sender_signature_verified: sender_vault_signature_verified ?? true,
+        created_at: queueItem.created.created_at.toISOString(),
+      });
+    }
+
     return res.status(201).json({
       id: queueItem.created.id,
       recipient_handle: recipientParsed.handle,
@@ -410,26 +435,54 @@ export const createMessagesRouter = (
         recipient_id: queueItem.recipient_id,
         payload: sanitizeLogPayload({ encrypted_blob, iv, sender_signature_verified }),
       });
-      const vaultEntry = await prisma.$transaction(async (tx) => {
-        const created = await tx.messageVault.create({
-          data: {
-            owner_id: req.user!.id,
-            original_sender_handle: queueItem.sender_handle!,
-            encrypted_blob,
-            iv,
-            sender_signature_verified,
-          },
-        });
 
-        await tx.incomingQueue.delete({ where: { id: queueItem.id } });
-        return created;
-      });
+      let vaultEntry;
+      try {
+        vaultEntry = await prisma.$transaction(async (tx) => {
+          // Delete first to acquire lock and fail fast if already processed
+          const deleted = await tx.incomingQueue.deleteMany({
+            where: { id: queueItem.id },
+          });
+
+          if (deleted.count === 0) {
+            throw new Error("ALREADY_PROCESSED");
+          }
+
+          const created = await tx.messageVault.create({
+            data: {
+              owner_id: req.user!.id,
+              original_sender_handle: queueItem.sender_handle!,
+              encrypted_blob,
+              iv,
+              sender_signature_verified,
+            },
+          });
+
+          return created;
+        });
+      } catch (err) {
+        if (err instanceof Error && err.message === "ALREADY_PROCESSED") {
+          return res.status(404).json({ error: "Queue item already processed" });
+        }
+        throw err;
+      }
 
       serverLogger.info("message.queue.stored", {
         id: vaultEntry.id,
         owner_id: vaultEntry.owner_id,
         original_sender_handle: vaultEntry.original_sender_handle,
         created_at: vaultEntry.created_at,
+      });
+
+      // Notify other devices of the recipient about the stored incoming message
+      io.to(req.user!.id).emit("INCOMING_MESSAGE_SYNCED", {
+        id: vaultEntry.id,
+        owner_id: vaultEntry.owner_id,
+        original_sender_handle: vaultEntry.original_sender_handle,
+        encrypted_blob: vaultEntry.encrypted_blob,
+        iv: vaultEntry.iv,
+        sender_signature_verified: vaultEntry.sender_signature_verified,
+        created_at: vaultEntry.created_at.toISOString(),
       });
 
       return res.status(201).json(vaultEntry);
@@ -487,33 +540,50 @@ export const createMessagesRouter = (
     } = parsed.data;
 
     if (message_id) {
+      // Use upsert to handle race conditions - if it exists and belongs to this user, return it
       const existing = await prisma.messageVault.findUnique({
         where: { id: message_id },
-        select: { id: true, owner_id: true },
       });
       if (existing) {
         if (existing.owner_id !== req.user.id) {
           return res.status(409).json({ error: "Message id already exists" });
         }
-        const found = await prisma.messageVault.findUnique({
-          where: { id: message_id },
-        });
-        if (found) {
-          return res.status(200).json(found);
-        }
+        // Already exists for this user, return it
+        return res.status(200).json(existing);
       }
     }
 
-    const entry = await prisma.messageVault.create({
-      data: {
-        ...(message_id ? { id: message_id } : {}),
-        owner_id: req.user.id,
-        original_sender_handle,
-        encrypted_blob,
-        iv,
-        sender_signature_verified,
-      },
-    });
+    let entry;
+    try {
+      entry = await prisma.messageVault.create({
+        data: {
+          ...(message_id ? { id: message_id } : {}),
+          owner_id: req.user.id,
+          original_sender_handle,
+          encrypted_blob,
+          iv,
+          sender_signature_verified,
+        },
+      });
+    } catch (err: unknown) {
+      // Handle race condition - another device created it first
+      if (
+        err &&
+        typeof err === "object" &&
+        "code" in err &&
+        err.code === "P2002" &&
+        message_id
+      ) {
+        const existing = await prisma.messageVault.findUnique({
+          where: { id: message_id },
+        });
+        if (existing && existing.owner_id === req.user.id) {
+          return res.status(200).json(existing);
+        }
+        return res.status(409).json({ error: "Message id already exists" });
+      }
+      throw err;
+    }
 
     serverLogger.info("message.vault.stored", {
       id: entry.id,

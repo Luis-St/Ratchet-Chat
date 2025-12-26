@@ -40,8 +40,18 @@ type StoredKeys = {
   token: string
 }
 
+export type SessionInfo = {
+  id: string
+  deviceInfo: string | null
+  ipAddress: string | null
+  createdAt: string
+  lastActiveAt: string
+  expiresAt: string
+  isCurrent: boolean
+}
+
 type AuthContextValue = {
-  status: "guest" | "authenticated"
+  status: "loading" | "guest" | "authenticated"
   user: { id: string | null; username: string; handle: string } | null
   token: string | null
   masterKey: CryptoKey | null
@@ -51,6 +61,9 @@ type AuthContextValue = {
   login: (username: string, password: string) => Promise<void>
   deleteAccount: () => Promise<void>
   logout: () => void
+  fetchSessions: () => Promise<SessionInfo[]>
+  invalidateSession: (sessionId: string) => Promise<void>
+  invalidateAllOtherSessions: () => Promise<number>
 }
 
 const ACTIVE_SESSION_KEY = "active_session"
@@ -127,8 +140,21 @@ async function persistActiveSession(keys: StoredKeys) {
   await db.auth.put({ username: ACTIVE_SESSION_KEY, data: keys })
 }
 
+async function clearStaleData() {
+  if (typeof window !== "undefined") {
+    window.localStorage.clear()
+    window.sessionStorage.clear()
+  }
+  try {
+    await db.delete()
+    await db.open()
+  } catch {
+    // Ignore errors during cleanup
+  }
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [status, setStatus] = React.useState<"guest" | "authenticated">("guest")
+  const [status, setStatus] = React.useState<"loading" | "guest" | "authenticated">("loading")
   const [token, setToken] = React.useState<string | null>(null)
   const [user, setUser] = React.useState<{
     id: string | null
@@ -141,7 +167,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [transportPrivateKey, setTransportPrivateKey] =
     React.useState<CryptoKey | null>(null)
 
-  const clearSession = React.useCallback(() => {
+  const clearSession = React.useCallback(async (callLogoutApi = true) => {
+    if (callLogoutApi && token) {
+      try {
+        await apiFetch("/auth/logout", { method: "POST" })
+      } catch {
+        // Best-effort logout
+      }
+    }
+
     setStatus("guest")
     setUser(null)
     setToken(null)
@@ -149,14 +183,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setIdentityPrivateKey(null)
     setTransportPrivateKey(null)
     setAuthToken(null)
-    
+
     if (typeof window !== "undefined") {
       window.localStorage.clear()
       window.sessionStorage.clear()
     }
-    
+
     void db.delete().then(() => db.open()).catch(() => {})
-  }, [])
+  }, [token])
 
   React.useEffect(() => {
     setUnauthorizedHandler(() => clearSession())
@@ -168,19 +202,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       try {
         const session = await loadActiveSession()
         if (!session) {
+          // No session found - clear any stale data and go to guest
+          await clearStaleData()
+          setStatus("guest")
           return
         }
-        
+
         const masterKeyJson = window.sessionStorage.getItem("ratchet-chat:master-key")
         if (!masterKeyJson) {
-           return
+          // Session exists but master key is missing - clear and go to guest
+          await clearStaleData()
+          setStatus("guest")
+          return
         }
         const masterKey = await importMasterKey(masterKeyJson)
 
         const identityPrivateKey = await decryptPrivateKey(masterKey, session.identityPrivateKey)
         const transportPrivateBytes = await decryptPrivateKey(masterKey, session.transportPrivateKey)
         const transportPrivateKey = await importTransportPrivateKey(transportPrivateBytes)
-        
+
         const userId = decodeJwtSubject(session.token)
 
         setAuthToken(session.token)
@@ -195,11 +235,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setIdentityPrivateKey(identityPrivateKey)
         setTransportPrivateKey(transportPrivateKey)
       } catch {
-        clearSession()
+        // Restoration failed - clear data and go to guest
+        await clearStaleData()
+        setStatus("guest")
       }
     }
     void restore()
-  }, [clearSession])
+  }, [])
 
   const register = React.useCallback(async (usernameInput: string, password: string) => {
     const { username, handle } = resolveLocalUser(usernameInput)
@@ -423,9 +465,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const deleteAccount = React.useCallback(async () => {
     await apiFetch("/auth/account", { method: "DELETE" })
-    clearSession()
+    await clearSession(false) // Don't call logout API, account is already deleted
   }, [clearSession])
 
+  const fetchSessions = React.useCallback(async (): Promise<SessionInfo[]> => {
+    return apiFetch<SessionInfo[]>("/auth/sessions")
+  }, [])
+
+  const invalidateSession = React.useCallback(async (sessionId: string): Promise<void> => {
+    await apiFetch(`/auth/sessions/${sessionId}`, { method: "DELETE" })
+  }, [])
+
+  const invalidateAllOtherSessions = React.useCallback(async (): Promise<number> => {
+    const result = await apiFetch<{ count: number }>("/auth/sessions", { method: "DELETE" })
+    return result.count
+  }, [])
+
+  const logout = React.useCallback(() => {
+    void clearSession(true)
+  }, [clearSession])
 
   const value = React.useMemo<AuthContextValue>(
     () => ({
@@ -438,7 +496,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       register,
       login,
       deleteAccount,
-      logout: clearSession,
+      logout,
+      fetchSessions,
+      invalidateSession,
+      invalidateAllOtherSessions,
     }),
     [
       status,
@@ -450,7 +511,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       register,
       login,
       deleteAccount,
-      clearSession,
+      logout,
+      fetchSessions,
+      invalidateSession,
+      invalidateAllOtherSessions,
     ]
   )
 

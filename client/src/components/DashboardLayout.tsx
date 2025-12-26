@@ -1487,6 +1487,22 @@ export function DashboardLayout() {
     }
     setSendError(null)
     setActiveActionMessageId(null)
+
+    // Stop typing indicator immediately when sending
+    if (typingTimeoutRef.current) {
+      clearTimeout(typingTimeoutRef.current)
+      typingTimeoutRef.current = null
+    }
+    if (settings.showTypingIndicator && socket && activeContact.publicTransportKey) {
+      const stopTypingPayload = JSON.stringify({ type: "typing", status: false })
+      encryptTransitEnvelope(stopTypingPayload, activeContact.publicTransportKey).then(blob => {
+        socket.emit("signal", {
+          recipient_handle: activeContact.handle,
+          encrypted_blob: blob
+        })
+      })
+    }
+
     setIsBusy(true)
     try {
       const messageId = crypto.randomUUID()

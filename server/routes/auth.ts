@@ -4,7 +4,7 @@ import { Router } from "express";
 import jwt from "jsonwebtoken";
 import { z } from "zod";
 
-import { getJwtSecret, authenticateToken } from "../middleware/auth";
+import { getJwtSecret, hashToken, createAuthenticateToken } from "../middleware/auth";
 import { createRateLimiter } from "../middleware/rateLimit";
 import { computeServerSession, generateServerEphemeral, srp } from "../lib/srp";
 
@@ -117,12 +117,16 @@ const resetFailures = (key: string) => {
   loginBackoff.delete(key);
 };
 
+const SESSION_EXPIRY_DAYS = 7;
+
 export const createAuthRouter = (prisma: PrismaClient) => {
   const router = Router();
+  const authenticateToken = createAuthenticateToken(prisma);
   const authLimiter = createRateLimiter({
     windowMs: Number(process.env.AUTH_RATE_LIMIT_WINDOW_MS ?? 60000),
     max: Number(process.env.AUTH_RATE_LIMIT_MAX ?? 20),
     keyPrefix: "auth",
+    skip: () => process.env.NODE_ENV !== "production",
   });
 
   router.use(authLimiter);
@@ -375,11 +379,24 @@ export const createAuthRouter = (prisma: PrismaClient) => {
       token = jwt.sign(
         { sub: user.id, username: user.username },
         getJwtSecret(),
-        { expiresIn: "12h" },
+        { expiresIn: "30d" },
       );
     } catch (error) {
       return res.status(500).json({ error: "Server misconfigured" });
     }
+
+    // Create session record
+    const tokenHash = hashToken(token);
+    const expiresAt = new Date(Date.now() + SESSION_EXPIRY_DAYS * 24 * 60 * 60 * 1000);
+    await prisma.session.create({
+      data: {
+        user_id: user.id,
+        token_hash: tokenHash,
+        device_info: req.headers["user-agent"] ?? null,
+        ip_address: req.ip ?? null,
+        expires_at: expiresAt,
+      },
+    });
 
     return res.json({
       token,
@@ -395,6 +412,99 @@ export const createAuthRouter = (prisma: PrismaClient) => {
         public_transport_key: user.public_transport_key,
       },
     });
+  });
+
+  // Session management endpoints
+  router.get("/sessions", authenticateToken, async (req: Request, res: Response) => {
+    if (!req.user) return res.status(401).json({ error: "Unauthorized" });
+
+    const currentTokenHash = req.headers.authorization
+      ? hashToken(req.headers.authorization.slice("Bearer ".length))
+      : null;
+
+    const sessions = await prisma.session.findMany({
+      where: {
+        user_id: req.user.id,
+        expires_at: { gt: new Date() },
+      },
+      select: {
+        id: true,
+        device_info: true,
+        ip_address: true,
+        created_at: true,
+        last_active_at: true,
+        expires_at: true,
+        token_hash: true,
+      },
+      orderBy: { last_active_at: "desc" },
+    });
+
+    return res.json(
+      sessions.map((s) => ({
+        id: s.id,
+        deviceInfo: s.device_info,
+        ipAddress: s.ip_address,
+        createdAt: s.created_at.toISOString(),
+        lastActiveAt: s.last_active_at.toISOString(),
+        expiresAt: s.expires_at.toISOString(),
+        isCurrent: s.token_hash === currentTokenHash,
+      }))
+    );
+  });
+
+  router.delete("/sessions/:id", authenticateToken, async (req: Request, res: Response) => {
+    if (!req.user) return res.status(401).json({ error: "Unauthorized" });
+
+    const { id } = req.params;
+    const session = await prisma.session.findUnique({
+      where: { id },
+      select: { id: true, user_id: true },
+    });
+
+    if (!session) {
+      return res.status(404).json({ error: "Session not found" });
+    }
+
+    if (session.user_id !== req.user.id) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    await prisma.session.delete({ where: { id } });
+
+    return res.json({ ok: true });
+  });
+
+  router.delete("/sessions", authenticateToken, async (req: Request, res: Response) => {
+    if (!req.user) return res.status(401).json({ error: "Unauthorized" });
+
+    const currentTokenHash = req.headers.authorization
+      ? hashToken(req.headers.authorization.slice("Bearer ".length))
+      : null;
+
+    const deleted = await prisma.session.deleteMany({
+      where: {
+        user_id: req.user.id,
+        token_hash: { not: currentTokenHash ?? "" },
+      },
+    });
+
+    return res.json({ count: deleted.count });
+  });
+
+  router.post("/logout", authenticateToken, async (req: Request, res: Response) => {
+    if (!req.user) return res.status(401).json({ error: "Unauthorized" });
+
+    const currentTokenHash = req.headers.authorization
+      ? hashToken(req.headers.authorization.slice("Bearer ".length))
+      : null;
+
+    if (currentTokenHash) {
+      await prisma.session.deleteMany({
+        where: { token_hash: currentTokenHash },
+      });
+    }
+
+    return res.json({ ok: true });
   });
 
   return router;

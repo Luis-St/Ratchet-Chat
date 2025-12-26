@@ -8,13 +8,14 @@ import { Server as SocketIOServer } from "socket.io";
 import { createAuthRouter } from "./routes/auth";
 import { createDirectoryRouter } from "./routes/directory";
 import { createMessagesRouter } from "./routes/messages";
-import { getJwtSecret, type AuthenticatedUser } from "./middleware/auth";
+import { getJwtSecret, hashToken, type AuthenticatedUser } from "./middleware/auth";
 import {
   getFederationDiscoveryDocument,
   getFederationIdentity,
   getFederationTlsConfig,
   getServerHost,
 } from "./lib/federationAuth";
+import { startSessionCleanup } from "./lib/sessionCleanup";
 import jwt from "jsonwebtoken";
 
 const app = express();
@@ -63,7 +64,9 @@ const io = new SocketIOServer(server, {
   },
 });
 
-io.use((socket, next) => {
+const SESSION_EXPIRY_DAYS = 7;
+
+io.use(async (socket, next) => {
   const rawToken = socket.handshake.auth?.token ?? socket.handshake.query?.token;
   const tokenValue = Array.isArray(rawToken) ? rawToken[0] : rawToken;
   if (!tokenValue || typeof tokenValue !== "string") {
@@ -78,9 +81,39 @@ io.use((socket, next) => {
     if (!payload.sub || typeof payload.sub !== "string") {
       return next(new Error("Unauthorized"));
     }
+
+    // Validate session exists in database
+    const tokenHash = hashToken(token);
+    const session = await prisma.session.findUnique({
+      where: { token_hash: tokenHash },
+      select: { id: true, expires_at: true },
+    });
+
+    if (!session) {
+      return next(new Error("Session invalidated"));
+    }
+
+    if (session.expires_at < new Date()) {
+      // Clean up expired session
+      await prisma.session.delete({ where: { id: session.id } });
+      return next(new Error("Session expired"));
+    }
+
+    // Refresh session expiry on WebSocket connect (rolling 7-day expiry)
+    const newExpiresAt = new Date(Date.now() + SESSION_EXPIRY_DAYS * 24 * 60 * 60 * 1000);
+    await prisma.session.update({
+      where: { id: session.id },
+      data: {
+        last_active_at: new Date(),
+        expires_at: newExpiresAt,
+      },
+    });
+
     const username =
       typeof payload.username === "string" ? payload.username : "";
     socket.data.user = { id: payload.sub, username } as AuthenticatedUser;
+    socket.data.sessionId = session.id;
+    socket.data.tokenHash = tokenHash;
     return next();
   } catch (error) {
     return next(new Error("Unauthorized"));
@@ -187,4 +220,5 @@ app.use((req, res) => {
 const port = process.env.PORT ? Number(process.env.PORT) : 3000;
 server.listen(port, () => {
   console.log(`Server listening on port ${port}`);
+  startSessionCleanup(prisma);
 });

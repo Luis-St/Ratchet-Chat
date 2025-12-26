@@ -8,9 +8,11 @@ const SocketContext = React.createContext<Socket | null>(null)
 export function SocketProvider({
   children,
   token: propToken,
+  onSessionInvalidated,
 }: {
   children: React.ReactNode
   token?: string | null
+  onSessionInvalidated?: () => void
 }) {
   const [socket, setSocket] = React.useState<Socket | null>(null)
 
@@ -36,6 +38,21 @@ export function SocketProvider({
       setSocket(null)
     }
   }, [propToken])
+
+  // Handle session invalidation events
+  React.useEffect(() => {
+    if (!socket || !onSessionInvalidated) return
+
+    const handleSessionInvalidated = () => {
+      onSessionInvalidated()
+    }
+
+    socket.on("SESSION_INVALIDATED", handleSessionInvalidated)
+
+    return () => {
+      socket.off("SESSION_INVALIDATED", handleSessionInvalidated)
+    }
+  }, [socket, onSessionInvalidated])
 
   return (
     <SocketContext.Provider value={socket}>{children}</SocketContext.Provider>

@@ -1,9 +1,10 @@
 "use client"
 
 import * as React from "react"
-import { Copy, Eye, EyeOff, Fingerprint, Lock, Shield } from "lucide-react"
+import { Copy, Eye, EyeOff, Fingerprint, Lock, LogOut, Monitor, Shield } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
+import { cn } from "@/lib/utils"
 import {
   Dialog,
   DialogContent,
@@ -15,11 +16,41 @@ import {
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { useAuth } from "@/context/AuthContext"
+import { useAuth, type SessionInfo } from "@/context/AuthContext"
 import { useSettings } from "@/hooks/useSettings"
 import { getIdentityPublicKey } from "@/lib/crypto"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
+
+function parseDeviceInfo(userAgent: string | null): string {
+  if (!userAgent) return "Unknown device"
+
+  // Simple parsing - extract browser and OS hints
+  if (userAgent.includes("Chrome")) {
+    if (userAgent.includes("Mobile")) return "Chrome Mobile"
+    return "Chrome"
+  }
+  if (userAgent.includes("Firefox")) return "Firefox"
+  if (userAgent.includes("Safari") && !userAgent.includes("Chrome")) return "Safari"
+  if (userAgent.includes("Edge")) return "Edge"
+
+  return "Browser"
+}
+
+function formatRelativeTime(dateString: string): string {
+  const date = new Date(dateString)
+  const now = new Date()
+  const diffMs = now.getTime() - date.getTime()
+  const diffSecs = Math.floor(diffMs / 1000)
+  const diffMins = Math.floor(diffSecs / 60)
+  const diffHours = Math.floor(diffMins / 60)
+  const diffDays = Math.floor(diffHours / 24)
+
+  if (diffDays > 0) return `${diffDays}d ago`
+  if (diffHours > 0) return `${diffHours}h ago`
+  if (diffMins > 0) return `${diffMins}m ago`
+  return "just now"
+}
 
 export function SettingsDialog({
   open,
@@ -28,12 +59,17 @@ export function SettingsDialog({
   open: boolean
   onOpenChange: (open: boolean) => void
 }) {
-  const { user, identityPrivateKey, deleteAccount } = useAuth()
+  const { user, identityPrivateKey, deleteAccount, fetchSessions, invalidateSession, invalidateAllOtherSessions } = useAuth()
   const { settings, updateSettings } = useSettings()
   const [showKey, setShowKey] = React.useState(false)
   const [deleteConfirm, setDeleteConfirm] = React.useState("")
   const [deleteError, setDeleteError] = React.useState<string | null>(null)
   const [isDeleting, setIsDeleting] = React.useState(false)
+
+  // Session management state
+  const [sessions, setSessions] = React.useState<SessionInfo[]>([])
+  const [loadingSessions, setLoadingSessions] = React.useState(false)
+  const [invalidatingSessionId, setInvalidatingSessionId] = React.useState<string | null>(null)
 
   const identityKey = React.useMemo(() => {
     if (!identityPrivateKey) return ""
@@ -43,6 +79,25 @@ export function SettingsDialog({
   const deleteLabel = user?.handle ?? user?.username ?? ""
   const isDeleteMatch = deleteLabel !== "" && deleteConfirm.trim() === deleteLabel
 
+  // Fetch sessions when dialog opens
+  const loadSessions = React.useCallback(async () => {
+    setLoadingSessions(true)
+    try {
+      const data = await fetchSessions()
+      setSessions(data)
+    } catch {
+      // Handle error silently
+    } finally {
+      setLoadingSessions(false)
+    }
+  }, [fetchSessions])
+
+  React.useEffect(() => {
+    if (open) {
+      void loadSessions()
+    }
+  }, [open, loadSessions])
+
   React.useEffect(() => {
     if (!open) {
       setDeleteConfirm("")
@@ -50,6 +105,27 @@ export function SettingsDialog({
       setIsDeleting(false)
     }
   }, [open])
+
+  const handleInvalidateSession = React.useCallback(async (sessionId: string) => {
+    setInvalidatingSessionId(sessionId)
+    try {
+      await invalidateSession(sessionId)
+      setSessions((prev) => prev.filter((s) => s.id !== sessionId))
+    } catch {
+      // Handle error
+    } finally {
+      setInvalidatingSessionId(null)
+    }
+  }, [invalidateSession])
+
+  const handleInvalidateAllOther = React.useCallback(async () => {
+    try {
+      await invalidateAllOtherSessions()
+      setSessions((prev) => prev.filter((s) => s.isCurrent))
+    } catch {
+      // Handle error
+    }
+  }, [invalidateAllOtherSessions])
 
   const handleDeleteAccount = React.useCallback(async () => {
     if (!deleteLabel) return
@@ -86,9 +162,10 @@ export function SettingsDialog({
           </DialogDescription>
         </DialogHeader>
         <Tabs defaultValue="privacy" className="w-full">
-          <TabsList className="grid w-full grid-cols-2">
+          <TabsList className="grid w-full grid-cols-3">
             <TabsTrigger value="privacy">Privacy</TabsTrigger>
-            <TabsTrigger value="security">Identity & Keys</TabsTrigger>
+            <TabsTrigger value="sessions">Sessions</TabsTrigger>
+            <TabsTrigger value="security">Identity</TabsTrigger>
           </TabsList>
           
           <TabsContent value="privacy" className="space-y-4 py-4">
@@ -123,6 +200,75 @@ export function SettingsDialog({
                 }
               />
             </div>
+          </TabsContent>
+
+          <TabsContent value="sessions" className="space-y-4 py-4">
+            <div className="space-y-1 mb-4">
+              <h3 className="text-sm font-medium">Active Sessions</h3>
+              <p className="text-xs text-muted-foreground">
+                Devices where you are currently logged in. Sessions expire after 7 days of inactivity.
+              </p>
+            </div>
+
+            {loadingSessions ? (
+              <p className="text-sm text-muted-foreground">Loading sessions...</p>
+            ) : (
+              <div className="space-y-3 max-h-[300px] overflow-y-auto">
+                {sessions.map((session) => (
+                  <div
+                    key={session.id}
+                    className={cn(
+                      "flex items-start justify-between rounded-lg border p-3",
+                      session.isCurrent && "border-emerald-500 bg-emerald-50/50 dark:bg-emerald-900/10"
+                    )}
+                  >
+                    <div className="flex items-start gap-3">
+                      <Monitor className="mt-0.5 h-4 w-4 text-muted-foreground" />
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-medium">
+                            {parseDeviceInfo(session.deviceInfo)}
+                          </span>
+                          {session.isCurrent && (
+                            <Badge variant="outline" className="text-[10px]">
+                              Current
+                            </Badge>
+                          )}
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          {session.ipAddress ?? "Unknown IP"} &bull; Created {formatRelativeTime(session.createdAt)}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          Last active {formatRelativeTime(session.lastActiveAt)}
+                        </p>
+                      </div>
+                    </div>
+                    {!session.isCurrent && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8 text-destructive hover:text-destructive"
+                        onClick={() => handleInvalidateSession(session.id)}
+                        disabled={invalidatingSessionId === session.id}
+                        title="Log out this session"
+                      >
+                        <LogOut className="h-4 w-4" />
+                      </Button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {sessions.length > 1 && (
+              <Button
+                variant="outline"
+                className="w-full mt-4"
+                onClick={handleInvalidateAllOther}
+              >
+                Log out all other sessions
+              </Button>
+            )}
           </TabsContent>
 
           <TabsContent value="security" className="space-y-4 py-4">

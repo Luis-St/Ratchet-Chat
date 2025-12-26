@@ -29,6 +29,7 @@ export function AuthScreen() {
   const [authError, setAuthError] = React.useState<string | null>(null)
   const [loading, setLoading] = React.useState<"login" | "register" | null>(null)
   const instanceHost = getInstanceHost()
+
   const validateLocalHandle = React.useCallback(
     (value: string) => {
       const trimmed = value.trim()

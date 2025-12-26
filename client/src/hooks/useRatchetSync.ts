@@ -773,13 +773,89 @@ export function useRatchetSync() {
     socket.on("connect_error", (err) => {
     })
     socket.on("INCOMING_MESSAGE", handler)
+
+    // Handle outgoing messages synced from other devices
+    const outgoingHandler = async (payload: {
+      message_id: string
+      original_sender_handle: string
+      encrypted_blob: string
+      iv: string
+      sender_signature_verified: boolean
+      created_at: string
+    }) => {
+      if (!payload?.message_id || !payload?.encrypted_blob || !payload?.iv) {
+        return
+      }
+      // Check if message already exists locally
+      const existing = await db.messages.get(payload.message_id)
+      if (existing) {
+        return
+      }
+      // Store the outgoing message from another device
+      const ownerId = user?.id ?? user?.handle ?? ""
+      await db.messages.put({
+        id: payload.message_id,
+        ownerId,
+        senderId: ownerId, // It's our own message
+        content: JSON.stringify({
+          encrypted_blob: payload.encrypted_blob,
+          iv: payload.iv,
+        }),
+        verified: payload.sender_signature_verified,
+        isRead: true, // Our own messages are always read
+        vaultSynced: true,
+        createdAt: payload.created_at,
+      })
+      setLastSync(Date.now())
+    }
+    socket.on("OUTGOING_MESSAGE_SYNCED", outgoingHandler)
+
+    // Handle incoming messages synced from other devices (when another device stored the message to vault)
+    const incomingSyncedHandler = async (payload: {
+      id: string
+      owner_id: string
+      original_sender_handle: string
+      encrypted_blob: string
+      iv: string
+      sender_signature_verified: boolean
+      created_at: string
+    }) => {
+      if (!payload?.id || !payload?.encrypted_blob || !payload?.iv) {
+        return
+      }
+      // Check if message already exists locally
+      const existing = await db.messages.get(payload.id)
+      if (existing) {
+        return
+      }
+      // Store the incoming message that was stored to vault by another device
+      const ownerId = user?.id ?? user?.handle ?? ""
+      await db.messages.put({
+        id: payload.id,
+        ownerId,
+        senderId: payload.original_sender_handle,
+        content: JSON.stringify({
+          encrypted_blob: payload.encrypted_blob,
+          iv: payload.iv,
+        }),
+        verified: payload.sender_signature_verified,
+        isRead: false,
+        vaultSynced: true,
+        createdAt: payload.created_at,
+      })
+      setLastSync(Date.now())
+    }
+    socket.on("INCOMING_MESSAGE_SYNCED", incomingSyncedHandler)
+
     return () => {
       socket.off("connect")
       socket.off("connect_error")
       socket.off("INCOMING_MESSAGE", handler)
+      socket.off("OUTGOING_MESSAGE_SYNCED", outgoingHandler)
+      socket.off("INCOMING_MESSAGE_SYNCED", incomingSyncedHandler)
       socket.disconnect()
     }
-  }, [masterKey, transportPrivateKey, runSync, user?.handle, processSingleQueueItem])
+  }, [masterKey, transportPrivateKey, runSync, user?.handle, user?.id, processSingleQueueItem])
 
   return { processQueue, syncVault, runSync, lastSync }
 }
