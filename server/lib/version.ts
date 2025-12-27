@@ -1,6 +1,5 @@
 import fs from "fs";
 import path from "path";
-import type { NextConfig } from "next";
 
 function resolveGitDir(startDir: string): string | null {
   let current = startDir;
@@ -51,7 +50,7 @@ function readRef(gitDir: string, ref: string): string | null {
   return null;
 }
 
-function getGitCommit(startDir: string): string | null {
+export function getGitCommit(startDir = process.cwd()): string | null {
   try {
     const gitDir = resolveGitDir(startDir);
     if (!gitDir) {
@@ -74,20 +73,3 @@ function getGitCommit(startDir: string): string | null {
     return null;
   }
 }
-
-const autoCommit =
-  process.env.NEXT_PUBLIC_CLIENT_COMMIT ??
-  process.env.NEXT_PUBLIC_GIT_COMMIT_SHA ??
-  process.env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA ??
-  getGitCommit(path.resolve(__dirname, "..")) ??
-  "unknown";
-
-const nextConfig: NextConfig = {
-  /* config options here */
-  reactCompiler: true,
-  env: {
-    NEXT_PUBLIC_CLIENT_COMMIT: autoCommit,
-  },
-};
-
-export default nextConfig;

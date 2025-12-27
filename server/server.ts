@@ -16,11 +16,18 @@ import {
   getServerHost,
 } from "./lib/federationAuth";
 import { startSessionCleanup } from "./lib/sessionCleanup";
+import { getGitCommit } from "./lib/version";
 import jwt from "jsonwebtoken";
 
 const app = express();
 const prisma = new PrismaClient();
 const federationTlsConfig = getFederationTlsConfig();
+const serverCommit =
+  process.env.SERVER_COMMIT_SHA ??
+  process.env.GIT_COMMIT_SHA ??
+  process.env.RENDER_GIT_COMMIT ??
+  getGitCommit(process.cwd()) ??
+  "unknown";
 // Ensure federation keys are generated and persisted on boot.
 void getFederationIdentity();
 app.disable("x-powered-by");
@@ -208,20 +215,38 @@ const corsMiddleware = cors({
   },
   credentials: true,
 });
+
+// Permissive CORS for federation/directory endpoints (any origin can query)
+const federationCorsMiddleware = cors({
+  origin: true,
+  credentials: false,
+  methods: ["GET", "POST", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+});
+
 app.use((req, res, next) => {
   if (shouldBypassCors(req)) {
-    return next();
+    // Federation endpoints need CORS headers but allow any origin
+    return federationCorsMiddleware(req, res, next);
   }
   return corsMiddleware(req, res, next);
 });
 app.use(express.json({ limit: "20mb" }));
+
+app.get("/health", (_req, res) => {
+  res.json({
+    status: "ok",
+    commit: serverCommit,
+    timestamp: new Date().toISOString(),
+  });
+});
 
 app.get("/.well-known/ratchet-chat/federation.json", (req, res) => {
   const doc = getFederationDiscoveryDocument();
   res.json(doc);
 });
 
-app.use("/auth", createAuthRouter(prisma));
+app.use("/auth", createAuthRouter(prisma, io));
 app.use("/directory", createDirectoryRouter(prisma));
 app.use("/api/directory", createDirectoryRouter(prisma));
 app.use("/", createMessagesRouter(prisma, io));

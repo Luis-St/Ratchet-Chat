@@ -2,6 +2,7 @@ import type { PrismaClient } from "@prisma/client";
 import type { Request, Response } from "express";
 import { Router } from "express";
 import jwt from "jsonwebtoken";
+import type { Server as SocketIOServer } from "socket.io";
 import { z } from "zod";
 
 import { getJwtSecret, hashToken, createAuthenticateToken } from "../middleware/auth";
@@ -21,6 +22,12 @@ const LOGIN_BACKOFF_MAX_MS = Number(
 const updateSettingsSchema = z.object({
   showTypingIndicator: z.boolean().optional(),
   sendReadReceipts: z.boolean().optional(),
+});
+
+const rotateTransportKeySchema = z.object({
+  public_transport_key: z.string().min(1),
+  encrypted_transport_key: z.string().min(1),
+  encrypted_transport_iv: z.string().min(1),
 });
 
 const registerSchema = z.object({
@@ -119,7 +126,7 @@ const resetFailures = (key: string) => {
 
 const SESSION_EXPIRY_DAYS = 7;
 
-export const createAuthRouter = (prisma: PrismaClient) => {
+export const createAuthRouter = (prisma: PrismaClient, io?: SocketIOServer) => {
   const router = Router();
   const authenticateToken = createAuthenticateToken(prisma);
   const authLimiter = createRateLimiter({
@@ -166,6 +173,44 @@ export const createAuthRouter = (prisma: PrismaClient) => {
       showTypingIndicator: user.show_typing_indicator,
       sendReadReceipts: user.send_read_receipts,
     });
+  });
+
+  router.patch("/keys/transport", authenticateToken, async (req: Request, res: Response) => {
+    if (!req.user) return res.status(401).json({ error: "Unauthorized" });
+    const parsed = rotateTransportKeySchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: "Invalid request" });
+
+    const {
+      public_transport_key,
+      encrypted_transport_key,
+      encrypted_transport_iv,
+    } = parsed.data;
+
+    const existing = await prisma.user.findUnique({
+      where: { id: req.user.id },
+      select: { id: true },
+    });
+
+    if (!existing) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    await prisma.user.update({
+      where: { id: req.user.id },
+      data: {
+        public_transport_key,
+        encrypted_transport_key,
+        encrypted_transport_iv,
+      },
+    });
+
+    io?.to(req.user.id).emit("TRANSPORT_KEY_ROTATED", {
+      public_transport_key,
+      encrypted_transport_key,
+      encrypted_transport_iv,
+    });
+
+    return res.json({ ok: true });
   });
 
   router.delete("/account", authenticateToken, async (req: Request, res: Response) => {
@@ -450,6 +495,17 @@ export const createAuthRouter = (prisma: PrismaClient) => {
         isCurrent: s.token_hash === currentTokenHash,
       }))
     );
+  });
+
+  router.delete("/sessions/current", authenticateToken, async (req: Request, res: Response) => {
+    if (!req.user) return res.status(401).json({ error: "Unauthorized" });
+    if (!req.sessionId) return res.status(400).json({ error: "Session not found" });
+
+    await prisma.session.delete({
+      where: { id: req.sessionId },
+    });
+
+    return res.json({ ok: true });
   });
 
   router.delete("/sessions/:id", authenticateToken, async (req: Request, res: Response) => {

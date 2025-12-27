@@ -12,11 +12,15 @@ import {
   SidebarProvider,
 } from "@/components/ui/sidebar"
 import { TooltipProvider } from "@/components/ui/tooltip"
-import { useAuth } from "@/context/AuthContext"
+import { useAuth, type TransportKeyRotationPayload } from "@/context/AuthContext"
 import { useSocket } from "@/context/SocketContext"
 import { useSettings } from "@/hooks/useSettings"
 import { useRatchetSync } from "@/hooks/useRatchetSync"
 import { apiFetch } from "@/lib/api"
+import {
+  CONTACT_TRANSPORT_KEY_UPDATED_EVENT,
+  type ContactTransportKeyUpdatedDetail,
+} from "@/lib/events"
 import {
   decryptString,
   buildMessageSignaturePayload,
@@ -50,7 +54,15 @@ import {
 } from "@/lib/messageUtils"
 
 export function DashboardLayout() {
-  const { user, masterKey, identityPrivateKey, transportPrivateKey, logout } = useAuth()
+  const {
+    user,
+    masterKey,
+    identityPrivateKey,
+    transportPrivateKey,
+    previousTransportPrivateKey,
+    logout,
+    applyTransportKeyRotation,
+  } = useAuth()
   const { theme } = useTheme()
   const socket = useSocket()
   const { settings } = useSettings()
@@ -93,6 +105,43 @@ export function DashboardLayout() {
     height: number
   } | null>(null)
   const emojiTheme = theme === "dark" ? Theme.DARK : theme === "system" ? Theme.AUTO : Theme.LIGHT
+  React.useEffect(() => {
+    if (typeof window === "undefined") {
+      return
+    }
+    const handleUpdate = (event: Event) => {
+      const detail = (event as CustomEvent<ContactTransportKeyUpdatedDetail>).detail
+      if (!detail?.handle || !detail.publicTransportKey) {
+        return
+      }
+      setContacts((current) =>
+        current.map((contact) =>
+          contact.handle === detail.handle
+            ? { ...contact, publicTransportKey: detail.publicTransportKey }
+            : contact
+        )
+      )
+    }
+    window.addEventListener(CONTACT_TRANSPORT_KEY_UPDATED_EVENT, handleUpdate)
+    return () => {
+      window.removeEventListener(CONTACT_TRANSPORT_KEY_UPDATED_EVENT, handleUpdate)
+    }
+  }, [])
+  React.useEffect(() => {
+    if (!socket) return
+
+    const handleTransportKeyRotation = (
+      payload: TransportKeyRotationPayload
+    ) => {
+      void applyTransportKeyRotation(payload)
+    }
+
+    socket.on("TRANSPORT_KEY_ROTATED", handleTransportKeyRotation)
+
+    return () => {
+      socket.off("TRANSPORT_KEY_ROTATED", handleTransportKeyRotation)
+    }
+  }, [socket, applyTransportKeyRotation])
   React.useEffect(() => {
     if (typeof window === "undefined") {
       return
@@ -311,7 +360,18 @@ export function DashboardLayout() {
 
     const handleSignal = async (data: { sender_handle: string; encrypted_blob: string }) => {
       try {
-        const plaintextBytes = await decryptTransitBlob(data.encrypted_blob, transportPrivateKey)
+        let plaintextBytes: Uint8Array
+        try {
+          plaintextBytes = await decryptTransitBlob(data.encrypted_blob, transportPrivateKey)
+        } catch {
+          if (!previousTransportPrivateKey) {
+            return
+          }
+          plaintextBytes = await decryptTransitBlob(
+            data.encrypted_blob,
+            previousTransportPrivateKey
+          )
+        }
         const plaintext = decodeUtf8(plaintextBytes)
         const payload = JSON.parse(plaintext) as { type: string; status?: boolean }
         
@@ -343,7 +403,7 @@ export function DashboardLayout() {
     return () => {
       socket.off("signal", handleSignal)
     }
-  }, [socket, transportPrivateKey, runSync])
+  }, [socket, transportPrivateKey, previousTransportPrivateKey, runSync])
 
   const messagesByPeer = React.useMemo(() => {
     const map = new Map<string, StoredMessage[]>()

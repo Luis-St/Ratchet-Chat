@@ -5,6 +5,8 @@ import { io } from "socket.io-client"
 import { useAuth } from "@/context/AuthContext"
 import { useSettings } from "@/hooks/useSettings"
 import { apiFetch, getAuthToken } from "@/lib/api"
+import { CONTACT_TRANSPORT_KEY_UPDATED_EVENT } from "@/lib/events"
+import { decodeContactRecord, saveContactRecord } from "@/lib/messageUtils"
 import {
   buildMessageSignaturePayload,
   decodeUtf8,
@@ -19,6 +21,7 @@ import {
 } from "@/lib/crypto"
 import { splitHandle } from "@/lib/handles"
 import { db } from "@/lib/db"
+import type { Contact } from "@/types/dashboard"
 
 type Attachment = {
   filename: string
@@ -74,11 +77,15 @@ type TransitPayload = {
   message?: string
   plaintext?: string
   attachments?: Attachment[]
-  type?: "edit" | "delete" | "reaction" | "receipt" | "message"
+  type?: "edit" | "delete" | "reaction" | "receipt" | "message" | "key_rotation"
   edited_at?: string
   editedAt?: string
   deleted_at?: string
   deletedAt?: string
+  public_transport_key?: string
+  publicTransportKey?: string
+  rotated_at?: number
+  rotatedAt?: number
   reaction_action?: "add" | "remove"
   reactionAction?: "add" | "remove"
   reaction_emoji?: string
@@ -146,7 +153,13 @@ const isNewerTimestamp = (current: string | undefined, next: string) => {
 }
 
 export function useRatchetSync() {
-  const { masterKey, transportPrivateKey, identityPrivateKey, user } = useAuth()
+  const {
+    masterKey,
+    transportPrivateKey,
+    previousTransportPrivateKey,
+    identityPrivateKey,
+    user,
+  } = useAuth()
   const { settings } = useSettings()
   const isSyncingRef = React.useRef(false)
   const directoryCacheRef = React.useRef(new Map<string, DirectoryEntry>())
@@ -307,7 +320,17 @@ export function useRatchetSync() {
           transportPrivateKey
         )
       } catch (e) {
-        return
+        if (!previousTransportPrivateKey) {
+          return
+        }
+        try {
+          decryptedBytes = await decryptTransitBlob(
+            item.encrypted_blob,
+            previousTransportPrivateKey
+          )
+        } catch {
+          return
+        }
       }
 
       const payload = parseTransitPayload(decryptedBytes)
@@ -358,6 +381,10 @@ export function useRatchetSync() {
         payload.receipt_status ?? payload.receiptStatus
       let payloadReceiptTimestamp =
         payload.receipt_timestamp ?? payload.receiptTimestamp
+      let payloadRotationKey =
+        payload.public_transport_key ?? payload.publicTransportKey
+      let payloadRotationTimestamp =
+        payload.rotated_at ?? payload.rotatedAt
       if (payloadType === "receipt" && typeof payload.content === "string") {
         const signedContent = payload.content
         if (!signedContent.startsWith("receipt:")) {
@@ -387,6 +414,40 @@ export function useRatchetSync() {
         }
         payloadReceiptStatus = signedStatus as ReceiptEventStatus
         payloadReceiptTimestamp = signedTimestamp
+      }
+      if (payloadType === "key_rotation" && typeof payload.content === "string") {
+        const signedContent = payload.content
+        if (!signedContent.startsWith("key-rotation:")) {
+          return
+        }
+        const parts = signedContent.split(":")
+        if (parts.length < 3) {
+          return
+        }
+        const signedTimestamp = parts[1]
+        const signedKey = parts.slice(2).join(":")
+        if (
+          payloadRotationTimestamp !== undefined &&
+          Number(payloadRotationTimestamp) !== Number(signedTimestamp)
+        ) {
+          return
+        }
+        if (payloadRotationKey && payloadRotationKey !== signedKey) {
+          return
+        }
+        payloadRotationTimestamp = Number(signedTimestamp)
+        payloadRotationKey = signedKey
+
+        // Freshness check: reject rotations older than 24 hours or in the future
+        const MAX_ROTATION_AGE_MS = 24 * 60 * 60 * 1000
+        const MAX_FUTURE_DRIFT_MS = 5 * 60 * 1000 // 5 min clock drift allowance
+        const now = Date.now()
+        if (
+          payloadRotationTimestamp < now - MAX_ROTATION_AGE_MS ||
+          payloadRotationTimestamp > now + MAX_FUTURE_DRIFT_MS
+        ) {
+          return
+        }
       }
       const senderHandle = item.sender_handle
       let signatureVerified = false
@@ -470,6 +531,68 @@ export function useRatchetSync() {
       if (authenticityVerified && directoryEntry) {
         peerIdentityKey = directoryEntry.public_identity_key
         peerTransportKey = directoryEntry.public_transport_key
+      }
+
+      if (payloadType === "key_rotation") {
+        if (!senderHandle || !payloadRotationKey || !masterKey || !user) {
+          return
+        }
+        if (
+          directoryEntry?.public_transport_key &&
+          directoryEntry.public_transport_key !== payloadRotationKey
+        ) {
+          return
+        }
+        const ownerId = user.id ?? user.handle
+        const handleParts = splitHandle(senderHandle)
+        const existingRecord = await db.contacts.get(senderHandle)
+        const existingContact = existingRecord
+          ? await decodeContactRecord(existingRecord, masterKey)
+          : null
+        const nextContact: Contact = {
+          handle: senderHandle,
+          username:
+            existingContact?.username ??
+            handleParts?.username ??
+            senderHandle,
+          host: existingContact?.host ?? handleParts?.host ?? "",
+          publicIdentityKey:
+            existingContact?.publicIdentityKey ??
+            directoryEntry?.public_identity_key ??
+            inlineIdentityKey ??
+            "",
+          publicTransportKey: payloadRotationKey,
+          createdAt: existingContact?.createdAt ?? item.created_at,
+        }
+        try {
+          await saveContactRecord(masterKey, ownerId, nextContact)
+          if (senderHandle) {
+            directoryCacheRef.current.set(senderHandle, {
+              id: directoryEntry?.id,
+              handle: senderHandle,
+              host: handleParts?.host ?? directoryEntry?.host ?? "",
+              public_identity_key:
+                directoryEntry?.public_identity_key ??
+                inlineIdentityKey ??
+                nextContact.publicIdentityKey,
+              public_transport_key: payloadRotationKey,
+            })
+          }
+          if (typeof window !== "undefined") {
+            window.dispatchEvent(
+              new CustomEvent(CONTACT_TRANSPORT_KEY_UPDATED_EVENT, {
+                detail: {
+                  handle: senderHandle,
+                  publicTransportKey: payloadRotationKey,
+                },
+              })
+            )
+          }
+          await apiFetch(`/messages/queue/${item.id}/ack`, { method: "POST" })
+        } catch {
+          // Retry key rotation on next sync
+        }
+        return
       }
 
       if (payloadType === "receipt") {
@@ -599,6 +722,7 @@ export function useRatchetSync() {
     [
       masterKey,
       transportPrivateKey,
+      previousTransportPrivateKey,
       user?.id,
       user?.handle,
       sendReceiptEvent,

@@ -21,6 +21,24 @@ import { useSettings } from "@/hooks/useSettings"
 import { getIdentityPublicKey } from "@/lib/crypto"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
+import { apiFetch } from "@/lib/api"
+
+const rawClientCommit =
+  process.env.NEXT_PUBLIC_CLIENT_COMMIT ??
+  process.env.NEXT_PUBLIC_GIT_COMMIT_SHA ??
+  process.env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA ??
+  "unknown"
+
+function formatCommit(commit: string | null | undefined) {
+  const normalized = (commit ?? "").trim()
+  if (!normalized) {
+    return { short: "unknown", full: "unknown" }
+  }
+  if (normalized.length <= 12) {
+    return { short: normalized, full: normalized }
+  }
+  return { short: `${normalized.slice(0, 7)}...`, full: normalized }
+}
 
 function parseDeviceInfo(userAgent: string | null): string {
   if (!userAgent) return "Unknown device"
@@ -59,12 +77,16 @@ export function SettingsDialog({
   open: boolean
   onOpenChange: (open: boolean) => void
 }) {
-  const { user, identityPrivateKey, deleteAccount, fetchSessions, invalidateSession, invalidateAllOtherSessions } = useAuth()
+  const { user, identityPrivateKey, deleteAccount, fetchSessions, invalidateSession, invalidateAllOtherSessions, rotateTransportKey } = useAuth()
   const { settings, updateSettings } = useSettings()
   const [showKey, setShowKey] = React.useState(false)
   const [deleteConfirm, setDeleteConfirm] = React.useState("")
   const [deleteError, setDeleteError] = React.useState<string | null>(null)
   const [isDeleting, setIsDeleting] = React.useState(false)
+  const [isRotatingTransportKey, setIsRotatingTransportKey] = React.useState(false)
+  const [rotateTransportError, setRotateTransportError] = React.useState<string | null>(null)
+  const [serverCommit, setServerCommit] = React.useState<string | null>(null)
+  const [loadingServerCommit, setLoadingServerCommit] = React.useState(false)
 
   // Session management state
   const [sessions, setSessions] = React.useState<SessionInfo[]>([])
@@ -78,6 +100,8 @@ export function SettingsDialog({
 
   const deleteLabel = user?.handle ?? user?.username ?? ""
   const isDeleteMatch = deleteLabel !== "" && deleteConfirm.trim() === deleteLabel
+  const clientCommit = formatCommit(rawClientCommit)
+  const serverCommitInfo = formatCommit(serverCommit)
 
   // Fetch sessions when dialog opens
   const loadSessions = React.useCallback(async () => {
@@ -92,17 +116,31 @@ export function SettingsDialog({
     }
   }, [fetchSessions])
 
+  const loadServerVersion = React.useCallback(async () => {
+    setLoadingServerCommit(true)
+    try {
+      const data = await apiFetch<{ commit?: string }>("/health")
+      setServerCommit(data.commit ?? "unknown")
+    } catch {
+      setServerCommit("unknown")
+    } finally {
+      setLoadingServerCommit(false)
+    }
+  }, [])
+
   React.useEffect(() => {
     if (open) {
       void loadSessions()
+      void loadServerVersion()
     }
-  }, [open, loadSessions])
+  }, [open, loadSessions, loadServerVersion])
 
   React.useEffect(() => {
     if (!open) {
       setDeleteConfirm("")
       setDeleteError(null)
       setIsDeleting(false)
+      setRotateTransportError(null)
     }
   }, [open])
 
@@ -126,6 +164,26 @@ export function SettingsDialog({
       // Handle error
     }
   }, [invalidateAllOtherSessions])
+
+  const handleRotateTransportKey = React.useCallback(async () => {
+    const confirmed = window.confirm(
+      "Rotate your transport key? Other signed-in devices will be updated."
+    )
+    if (!confirmed) {
+      return
+    }
+    setRotateTransportError(null)
+    setIsRotatingTransportKey(true)
+    try {
+      await rotateTransportKey()
+    } catch (error) {
+      setRotateTransportError(
+        error instanceof Error ? error.message : "Unable to rotate transport key"
+      )
+    } finally {
+      setIsRotatingTransportKey(false)
+    }
+  }, [rotateTransportKey])
 
   const handleDeleteAccount = React.useCallback(async () => {
     if (!deleteLabel) return
@@ -314,6 +372,32 @@ export function SettingsDialog({
               </p>
             </div>
 
+            <div className="rounded-lg border bg-muted/50 p-4">
+              <div className="mb-3 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Lock className="h-4 w-4 text-sky-600" />
+                  <span className="font-semibold text-sm">Transport Key</span>
+                </div>
+                <Badge variant="outline" className="text-[10px] font-mono">RSA-2048</Badge>
+              </div>
+              <p className="text-[10px] text-muted-foreground">
+                Used to decrypt incoming payloads. Rotating will update your other signed-in devices.
+              </p>
+              <div className="mt-3 flex items-center justify-between">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleRotateTransportKey}
+                  disabled={isRotatingTransportKey}
+                >
+                  {isRotatingTransportKey ? "Rotating..." : "Rotate key"}
+                </Button>
+              </div>
+              {rotateTransportError ? (
+                <p className="mt-2 text-[10px] text-destructive">{rotateTransportError}</p>
+              ) : null}
+            </div>
+
             <div className="flex items-start gap-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3 dark:border-emerald-900/30 dark:bg-emerald-900/10">
               <Shield className="mt-0.5 h-4 w-4 text-emerald-600 dark:text-emerald-400" />
               <div className="space-y-1">
@@ -321,6 +405,24 @@ export function SettingsDialog({
                 <p className="text-[10px] text-emerald-700 dark:text-emerald-300">
                   Your private keys never leave your device. The server cannot decrypt your messages.
                 </p>
+              </div>
+            </div>
+
+            <div className="rounded-lg border bg-muted/50 p-4">
+              <div className="mb-2 text-sm font-semibold">Build info</div>
+              <div className="space-y-1 text-xs">
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-foreground">Client</span>
+                  <span className="font-mono" title={clientCommit.full}>
+                    {clientCommit.short}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-foreground">Server</span>
+                  <span className="font-mono" title={serverCommitInfo.full}>
+                    {loadingServerCommit ? "Loading..." : serverCommitInfo.short}
+                  </span>
+                </div>
               </div>
             </div>
 

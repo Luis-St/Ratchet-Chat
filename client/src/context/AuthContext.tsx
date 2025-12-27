@@ -8,18 +8,23 @@ import {
   base64ToArrayBuffer,
   base64ToBytes,
   bytesToBase64,
+  buildMessageSignaturePayload,
   decryptPrivateKey,
   deriveMasterKey,
+  encryptTransitEnvelope,
   encryptPrivateKey,
   exportTransportPrivateKey,
+  getIdentityPublicKey,
   getSubtleCrypto,
   generateIdentityKeyPair,
   generateSalt,
   generateTransportKeyPair,
   importTransportPrivateKey,
+  signMessage,
   type EncryptedPayload,
 } from "@/lib/crypto"
 import { getInstanceHost, normalizeHandle, splitHandle } from "@/lib/handles"
+import { decodeContactRecord } from "@/lib/messageUtils"
 import {
   computeClientProof,
   computeVerifier,
@@ -27,6 +32,7 @@ import {
   generateSrpSalt,
   verifyServerProof,
 } from "@/lib/srp"
+import type { Contact, DirectoryEntry } from "@/types/dashboard"
 
 type StoredKeys = {
   username: string
@@ -38,6 +44,17 @@ type StoredKeys = {
   publicIdentityKey: string
   publicTransportKey: string
   token: string
+}
+
+type PreviousTransportKeyRecord = {
+  encrypted: EncryptedPayload
+  expiresAt: number
+}
+
+export type TransportKeyRotationPayload = {
+  public_transport_key: string
+  encrypted_transport_key: string
+  encrypted_transport_iv: string
 }
 
 export type SessionInfo = {
@@ -57,6 +74,7 @@ type AuthContextValue = {
   masterKey: CryptoKey | null
   identityPrivateKey: Uint8Array | null
   transportPrivateKey: CryptoKey | null
+  previousTransportPrivateKey: CryptoKey | null
   register: (username: string, password: string) => Promise<void>
   login: (username: string, password: string) => Promise<void>
   deleteAccount: () => Promise<void>
@@ -64,9 +82,15 @@ type AuthContextValue = {
   fetchSessions: () => Promise<SessionInfo[]>
   invalidateSession: (sessionId: string) => Promise<void>
   invalidateAllOtherSessions: () => Promise<number>
+  rotateTransportKey: () => Promise<void>
+  applyTransportKeyRotation: (payload: TransportKeyRotationPayload) => Promise<void>
 }
 
 const ACTIVE_SESSION_KEY = "active_session"
+const TRANSPORT_KEY_ROTATED_AT_KEY = "transportKeyRotatedAt"
+const TRANSPORT_KEY_ROTATION_MS = 30 * 24 * 60 * 60 * 1000
+const PREVIOUS_TRANSPORT_KEY_KEY = "previousTransportKey"
+const TRANSPORT_KEY_GRACE_MS = 72 * 60 * 60 * 1000
 
 const AuthContext = React.createContext<AuthContextValue | undefined>(undefined)
 
@@ -140,6 +164,60 @@ async function persistActiveSession(keys: StoredKeys) {
   await db.auth.put({ username: ACTIVE_SESSION_KEY, data: keys })
 }
 
+async function updateActiveSession(patch: Partial<StoredKeys>) {
+  const current = await loadActiveSession()
+  if (!current) {
+    return
+  }
+  await persistActiveSession({ ...current, ...patch })
+}
+
+async function getPreviousTransportKeyRecord(): Promise<PreviousTransportKeyRecord | null> {
+  const record = await db.syncState.get(PREVIOUS_TRANSPORT_KEY_KEY)
+  const value = record?.value
+  if (!value || typeof value !== "object") {
+    return null
+  }
+  const parsed = value as PreviousTransportKeyRecord
+  if (
+    !parsed.encrypted ||
+    typeof parsed.encrypted.ciphertext !== "string" ||
+    typeof parsed.encrypted.iv !== "string" ||
+    typeof parsed.expiresAt !== "number"
+  ) {
+    return null
+  }
+  return parsed
+}
+
+async function setPreviousTransportKeyRecord(record: PreviousTransportKeyRecord | null) {
+  if (!record) {
+    await db.syncState.delete(PREVIOUS_TRANSPORT_KEY_KEY)
+    return
+  }
+  await db.syncState.put({ key: PREVIOUS_TRANSPORT_KEY_KEY, value: record })
+}
+
+async function getTransportKeyRotatedAt(): Promise<number | null> {
+  const record = await db.syncState.get(TRANSPORT_KEY_ROTATED_AT_KEY)
+  const value = record?.value
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value
+  }
+  if (typeof value === "string") {
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? parsed : null
+  }
+  return null
+}
+
+async function setTransportKeyRotatedAt(timestamp: number) {
+  await db.syncState.put({
+    key: TRANSPORT_KEY_ROTATED_AT_KEY,
+    value: timestamp,
+  })
+}
+
 async function clearStaleData() {
   if (typeof window !== "undefined") {
     window.localStorage.clear()
@@ -166,13 +244,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     React.useState<Uint8Array | null>(null)
   const [transportPrivateKey, setTransportPrivateKey] =
     React.useState<CryptoKey | null>(null)
+  const [previousTransportPrivateKey, setPreviousTransportPrivateKey] =
+    React.useState<CryptoKey | null>(null)
 
   const clearSession = React.useCallback(async (callLogoutApi = true) => {
     if (callLogoutApi && token) {
       try {
-        await apiFetch("/auth/logout", { method: "POST" })
+        await apiFetch("/auth/sessions/current", { method: "DELETE" })
       } catch {
-        // Best-effort logout
+        try {
+          await apiFetch("/auth/logout", { method: "POST" })
+        } catch {
+          // Best-effort logout
+        }
       }
     }
 
@@ -182,6 +266,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setMasterKey(null)
     setIdentityPrivateKey(null)
     setTransportPrivateKey(null)
+    setPreviousTransportPrivateKey(null)
     setAuthToken(null)
 
     if (typeof window !== "undefined") {
@@ -203,6 +288,31 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUnauthorizedHandler(() => clearSession())
     return () => setUnauthorizedHandler(null)
   }, [clearSession])
+
+  const refreshPreviousTransportKey = React.useCallback(async (key?: CryptoKey | null) => {
+    const activeKey = key ?? masterKey
+    if (!activeKey) {
+      setPreviousTransportPrivateKey(null)
+      return
+    }
+    const record = await getPreviousTransportKeyRecord()
+    if (!record) {
+      setPreviousTransportPrivateKey(null)
+      return
+    }
+    if (record.expiresAt <= Date.now()) {
+      await setPreviousTransportKeyRecord(null)
+      setPreviousTransportPrivateKey(null)
+      return
+    }
+    try {
+      const previousBytes = await decryptPrivateKey(activeKey, record.encrypted)
+      const previousKey = await importTransportPrivateKey(previousBytes)
+      setPreviousTransportPrivateKey(previousKey)
+    } catch {
+      setPreviousTransportPrivateKey(null)
+    }
+  }, [masterKey])
 
   React.useEffect(() => {
     const restore = async () => {
@@ -243,6 +353,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setMasterKey(masterKey)
         setIdentityPrivateKey(identityPrivateKey)
         setTransportPrivateKey(transportPrivateKey)
+        await refreshPreviousTransportKey(masterKey)
       } catch {
         // Restoration failed - clear data and go to guest
         await clearStaleData()
@@ -251,6 +362,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
     void restore()
   }, [])
+
+  React.useEffect(() => {
+    if (status !== "authenticated" || !masterKey) {
+      setPreviousTransportPrivateKey(null)
+      return
+    }
+    void refreshPreviousTransportKey()
+  }, [status, masterKey, refreshPreviousTransportKey])
 
   const register = React.useCallback(async (usernameInput: string, password: string) => {
     const { username, handle } = resolveLocalUser(usernameInput)
@@ -479,6 +598,206 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await clearSession(false) // Don't call logout API, account is already deleted
   }, [clearSession])
 
+  const stashPreviousTransportKey = React.useCallback(async () => {
+    const session = await loadActiveSession()
+    if (!session?.transportPrivateKey) {
+      return
+    }
+    await setPreviousTransportKeyRecord({
+      encrypted: session.transportPrivateKey,
+      expiresAt: Date.now() + TRANSPORT_KEY_GRACE_MS,
+    })
+    if (transportPrivateKey) {
+      setPreviousTransportPrivateKey(transportPrivateKey)
+    }
+  }, [transportPrivateKey])
+
+  const notifyContactsOfTransportKeyRotation = React.useCallback(
+    async (publicTransportKey: string, rotatedAt: number) => {
+      if (!masterKey || !identityPrivateKey || !user?.handle) {
+        return
+      }
+      const ownerId = user.id ?? user.handle
+      const records = await db.contacts
+        .where("ownerId")
+        .equals(ownerId)
+        .toArray()
+      const decoded = await Promise.all(
+        records.map((record) => decodeContactRecord(record, masterKey))
+      )
+      const contacts = decoded.filter(Boolean) as Contact[]
+      if (contacts.length === 0) {
+        return
+      }
+      const signatureBody = `key-rotation:${rotatedAt}:${publicTransportKey}`
+      const signature = signMessage(
+        buildMessageSignaturePayload(user.handle, signatureBody),
+        identityPrivateKey
+      )
+      const payload = JSON.stringify({
+        type: "key_rotation",
+        content: signatureBody,
+        rotated_at: rotatedAt,
+        public_transport_key: publicTransportKey,
+        sender_handle: user.handle,
+        sender_signature: signature,
+        sender_identity_key: getIdentityPublicKey(identityPrivateKey),
+      })
+
+      for (const contact of contacts) {
+        if (!contact.handle || contact.handle === user.handle) {
+          continue
+        }
+        let recipientTransportKey = contact.publicTransportKey
+        if (!recipientTransportKey) {
+          try {
+            const entry = await apiFetch<DirectoryEntry>(
+              `/api/directory?handle=${encodeURIComponent(contact.handle)}`
+            )
+            recipientTransportKey = entry.public_transport_key
+          } catch {
+            continue
+          }
+        }
+        try {
+          const encryptedBlob = await encryptTransitEnvelope(
+            payload,
+            recipientTransportKey
+          )
+          await apiFetch("/messages/send", {
+            method: "POST",
+            body: {
+              recipient_handle: contact.handle,
+              encrypted_blob: encryptedBlob,
+              message_id: crypto.randomUUID(),
+              event_type: "key_rotation",
+            },
+          })
+        } catch {
+          // Best-effort key rotation notifications
+        }
+      }
+    },
+    [masterKey, identityPrivateKey, user?.handle, user?.id]
+  )
+
+  const rotateTransportKey = React.useCallback(async () => {
+    if (!masterKey || !identityPrivateKey || !user?.handle) {
+      throw new Error("Key material unavailable")
+    }
+    const rotatedAt = Date.now()
+    await stashPreviousTransportKey()
+    const transportPair = await generateTransportKeyPair()
+    const transportPrivateBytes = await exportTransportPrivateKey(
+      transportPair.privateKey
+    )
+    const encryptedTransport = await encryptPrivateKey(
+      masterKey,
+      transportPrivateBytes
+    )
+
+    await apiFetch("/auth/keys/transport", {
+      method: "PATCH",
+      body: {
+        public_transport_key: transportPair.publicKey,
+        encrypted_transport_key: encryptedTransport.ciphertext,
+        encrypted_transport_iv: encryptedTransport.iv,
+      },
+    })
+
+    await updateActiveSession({
+      transportPrivateKey: encryptedTransport,
+      publicTransportKey: transportPair.publicKey,
+    })
+    setTransportPrivateKey(transportPair.privateKey)
+    await setTransportKeyRotatedAt(rotatedAt)
+    try {
+      await notifyContactsOfTransportKeyRotation(
+        transportPair.publicKey,
+        rotatedAt
+      )
+    } catch {
+      // Best-effort notifications
+    }
+  }, [
+    masterKey,
+    identityPrivateKey,
+    user?.handle,
+    stashPreviousTransportKey,
+    notifyContactsOfTransportKeyRotation,
+  ])
+
+  const rotationCheckRef = React.useRef(false)
+
+  const checkTransportKeyRotation = React.useCallback(async () => {
+    if (rotationCheckRef.current) {
+      return
+    }
+    rotationCheckRef.current = true
+    try {
+      const lastRotatedAt = await getTransportKeyRotatedAt()
+      const now = Date.now()
+      if (!lastRotatedAt) {
+        await setTransportKeyRotatedAt(now)
+        return
+      }
+      if (now - lastRotatedAt >= TRANSPORT_KEY_ROTATION_MS) {
+        await rotateTransportKey()
+      }
+      await refreshPreviousTransportKey()
+    } finally {
+      rotationCheckRef.current = false
+    }
+  }, [rotateTransportKey, refreshPreviousTransportKey])
+
+  React.useEffect(() => {
+    if (status !== "authenticated" || !masterKey) {
+      return
+    }
+    let cancelled = false
+    const runCheck = async () => {
+      if (cancelled) return
+      await checkTransportKeyRotation()
+    }
+    void runCheck()
+    const interval = window.setInterval(runCheck, 6 * 60 * 60 * 1000)
+    return () => {
+      cancelled = true
+      window.clearInterval(interval)
+    }
+  }, [status, masterKey, checkTransportKeyRotation])
+
+  const applyTransportKeyRotation = React.useCallback(
+    async (payload: TransportKeyRotationPayload) => {
+      if (!masterKey) {
+        return
+      }
+      try {
+        await stashPreviousTransportKey()
+        const encryptedTransport = {
+          ciphertext: payload.encrypted_transport_key,
+          iv: payload.encrypted_transport_iv,
+        }
+        const transportPrivateBytes = await decryptPrivateKey(
+          masterKey,
+          encryptedTransport
+        )
+        const nextTransportKey = await importTransportPrivateKey(
+          transportPrivateBytes
+        )
+        await updateActiveSession({
+          transportPrivateKey: encryptedTransport,
+          publicTransportKey: payload.public_transport_key,
+        })
+        setTransportPrivateKey(nextTransportKey)
+        await setTransportKeyRotatedAt(Date.now())
+      } catch {
+        // Best-effort rotation apply
+      }
+    },
+    [masterKey, stashPreviousTransportKey]
+  )
+
   const fetchSessions = React.useCallback(async (): Promise<SessionInfo[]> => {
     return apiFetch<SessionInfo[]>("/auth/sessions")
   }, [])
@@ -504,6 +823,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       masterKey,
       identityPrivateKey,
       transportPrivateKey,
+      previousTransportPrivateKey,
       register,
       login,
       deleteAccount,
@@ -511,6 +831,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       fetchSessions,
       invalidateSession,
       invalidateAllOtherSessions,
+      rotateTransportKey,
+      applyTransportKeyRotation,
     }),
     [
       status,
@@ -519,6 +841,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       masterKey,
       identityPrivateKey,
       transportPrivateKey,
+      previousTransportPrivateKey,
       register,
       login,
       deleteAccount,
@@ -526,6 +849,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       fetchSessions,
       invalidateSession,
       invalidateAllOtherSessions,
+      rotateTransportKey,
+      applyTransportKeyRotation,
     ]
   )
 

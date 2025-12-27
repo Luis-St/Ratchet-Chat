@@ -23,7 +23,9 @@ const sendSchema = z.object({
   recipient_handle: z.string().min(1),
   encrypted_blob: z.string().min(1),
   message_id: z.string().uuid(),
-  event_type: z.enum(["message", "edit", "delete", "reaction", "receipt"]).optional(),
+  event_type: z
+    .enum(["message", "edit", "delete", "reaction", "receipt", "key_rotation"])
+    .optional(),
   reaction_emoji: z.string().optional(),
   sender_vault_blob: z.string().min(1).optional(),
   sender_vault_iv: z.string().min(1).optional(),
@@ -349,6 +351,15 @@ export const createMessagesRouter = (
             sender_handle: senderHandle,
             event_type: "reaction",
             reaction_emoji,
+          },
+        });
+      } else if (event_type === "key_rotation") {
+        // Keep only the latest key rotation per sender
+        await tx.incomingQueue.deleteMany({
+          where: {
+            recipient_id: recipient.id,
+            sender_handle: senderHandle,
+            event_type: "key_rotation",
           },
         });
       }
