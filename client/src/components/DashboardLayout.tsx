@@ -72,8 +72,10 @@ export function DashboardLayout() {
   const { theme } = useTheme()
   const socket = useSocket()
   const { settings } = useSettings()
-  const { initiateCall, callState } = useCall()
-  const { lastSync, runSync, summaries, summariesLoaded } = useRatchetSync()
+  const { initiateCall, callState, handleCallMessage } = useCall()
+  const { lastSync, runSync, summaries, summariesLoaded } = useRatchetSync({
+    onCallMessage: handleCallMessage,
+  })
   const [contacts, setContacts] = React.useState<Contact[]>([])
   const [activeId, setActiveId] = React.useState<string>("")
   const [messages, setMessages] = React.useState<StoredMessage[]>([])
@@ -1146,6 +1148,7 @@ export function DashboardLayout() {
         return
       }
       let publicTransportKey = activeContact.publicTransportKey
+      let publicIdentityKey = activeContact.publicIdentityKey
 
       try {
         const entry = await apiFetch<DirectoryEntry>(
@@ -1153,6 +1156,7 @@ export function DashboardLayout() {
         )
         if (entry.public_transport_key) {
           publicTransportKey = entry.public_transport_key
+          publicIdentityKey = entry.public_identity_key ?? publicIdentityKey
           if (entry.public_transport_key !== activeContact.publicTransportKey) {
             const updatedContact: Contact = {
               ...activeContact,
@@ -1174,13 +1178,13 @@ export function DashboardLayout() {
         // Directory lookup is best-effort; fall back to stored key.
       }
 
-      if (!publicTransportKey) {
+      if (!publicTransportKey || !publicIdentityKey) {
         return
       }
 
       // Resume AudioContext on user gesture for Safari
       resumeAudioContext()
-      void initiateCall(activeContact.handle, publicTransportKey, callType)
+      void initiateCall(activeContact.handle, publicTransportKey, publicIdentityKey, callType)
     },
     [activeContact, initiateCall, masterKey, user]
   )

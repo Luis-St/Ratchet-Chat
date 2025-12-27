@@ -16,6 +16,7 @@ import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { useAuth, type SessionInfo } from "@/context/AuthContext"
+import { useCall } from "@/context/CallContext"
 import { useSettings } from "@/hooks/useSettings"
 import { getIdentityPublicKey } from "@/lib/crypto"
 import { Badge } from "@/components/ui/badge"
@@ -66,7 +67,9 @@ export function SettingsDialog({
   onOpenChange: (open: boolean) => void
 }) {
   const { user, identityPrivateKey, deleteAccount, fetchSessions, invalidateSession, invalidateAllOtherSessions, rotateTransportKey, getTransportKeyRotatedAt } = useAuth()
+  const { callState } = useCall()
   const { settings, updateSettings } = useSettings()
+  const isInActiveCall = callState.status !== "idle" && callState.status !== "ended"
   const [showKey, setShowKey] = React.useState(false)
   const [deleteConfirm, setDeleteConfirm] = React.useState("")
   const [deleteError, setDeleteError] = React.useState<string | null>(null)
@@ -150,6 +153,16 @@ export function SettingsDialog({
   }, [invalidateAllOtherSessions])
 
   const handleRotateTransportKey = React.useCallback(async () => {
+    // Show extra warning if user is in an active call
+    if (isInActiveCall) {
+      const callWarningConfirmed = window.confirm(
+        "You are currently in a call. Rotating your key now may disrupt the call. Are you sure you want to continue?"
+      )
+      if (!callWarningConfirmed) {
+        return
+      }
+    }
+
     const confirmed = window.confirm(
       "Rotate your transport key? Other signed-in devices will be updated."
     )
@@ -168,7 +181,7 @@ export function SettingsDialog({
     } finally {
       setIsRotatingTransportKey(false)
     }
-  }, [rotateTransportKey])
+  }, [rotateTransportKey, isInActiveCall])
 
   const handleDeleteAccount = React.useCallback(async () => {
     if (!deleteLabel) return

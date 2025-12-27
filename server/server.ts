@@ -6,7 +6,6 @@ import { createServer as createHttpsServer } from "https";
 import { Server as SocketIOServer } from "socket.io";
 
 import { createAuthRouter } from "./routes/auth";
-import { createCallsRouter } from "./routes/calls";
 import { createDirectoryRouter } from "./routes/directory";
 import { createMessagesRouter } from "./routes/messages";
 import { getJwtSecret, hashToken, type AuthenticatedUser } from "./middleware/auth";
@@ -18,7 +17,6 @@ import {
 } from "./lib/federationAuth";
 import { startSessionCleanup } from "./lib/sessionCleanup";
 import { getGitCommit } from "./lib/version";
-import { createCallWebSocketServer } from "./lib/callSocket";
 import jwt from "jsonwebtoken";
 
 const app = express();
@@ -81,9 +79,6 @@ const io = new SocketIOServer(server, {
     credentials: true,
   },
 });
-
-// Create dedicated WebSocket server for calls (pure WebSocket, no polling)
-const callWss = createCallWebSocketServer(server, prisma);
 
 const SESSION_EXPIRY_DAYS = 7;
 
@@ -265,7 +260,6 @@ app.get("/.well-known/ratchet-chat/federation.json", (req, res) => {
 });
 
 app.use("/auth", createAuthRouter(prisma, io));
-app.use("/api/calls", createCallsRouter(prisma));
 app.use("/directory", createDirectoryRouter(prisma));
 app.use("/api/directory", createDirectoryRouter(prisma));
 app.use("/", createMessagesRouter(prisma, io));

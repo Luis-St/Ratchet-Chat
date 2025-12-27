@@ -22,6 +22,10 @@ import {
 import { splitHandle } from "@/lib/handles"
 import { db } from "@/lib/db"
 import type { Contact } from "@/types/dashboard"
+import type { CallMessagePayload } from "@/context/CallContext"
+
+// Call signaling messages older than this are stale and should be ignored
+const CALL_SIGNALING_MAX_AGE_MS = 120_000 // 120 seconds
 
 type Attachment = {
   filename: string
@@ -77,7 +81,7 @@ type TransitPayload = {
   message?: string
   plaintext?: string
   attachments?: Attachment[]
-  type?: "edit" | "delete" | "reaction" | "receipt" | "message" | "key_rotation"
+  type?: "edit" | "delete" | "reaction" | "receipt" | "message" | "key_rotation" | "call"
   edited_at?: string
   editedAt?: string
   deleted_at?: string
@@ -112,6 +116,15 @@ type TransitPayload = {
   replyToSenderHandle?: string
   reply_to_sender_name?: string
   replyToSenderName?: string
+  // Call signaling fields
+  call_type?: "AUDIO" | "VIDEO"
+  call_id?: string
+  call_action?: "offer" | "answer" | "ice" | "busy" | "declined" | "end" | "ringing"
+  sdp?: string
+  candidate?: RTCIceCandidateInit
+  timestamp?: string
+  // Call notice fields (stored in vault)
+  event_type?: "CALL_MISSED" | "CALL_DECLINED" | "CALL_ENDED"
 }
 
 function parseTransitPayload(bytes: Uint8Array): TransitPayload & { content: string } {
@@ -152,7 +165,12 @@ const isNewerTimestamp = (current: string | undefined, next: string) => {
   return nextDate > currentDate
 }
 
-export function useRatchetSync() {
+type UseRatchetSyncOptions = {
+  onCallMessage?: (senderHandle: string, senderIdentityKey: string, payload: CallMessagePayload) => void
+}
+
+export function useRatchetSync(options: UseRatchetSyncOptions = {}) {
+  const { onCallMessage } = options
   const {
     masterKey,
     transportPrivateKey,
@@ -334,7 +352,58 @@ export function useRatchetSync() {
       }
 
       const payload = parseTransitPayload(decryptedBytes)
-      
+
+      // Handle call signaling messages (ephemeral, not stored in vault)
+      if (payload.type === "call" && payload.call_action) {
+        const senderHandle = item.sender_handle
+        const inlineIdentityKey = payload.senderIdentityKey ?? payload.sender_identity_key
+
+        // Check if message is stale (older than 120 seconds)
+        const messageTimestamp = payload.timestamp ? new Date(payload.timestamp).getTime() : 0
+        const messageAge = Date.now() - messageTimestamp
+
+        if (messageAge > CALL_SIGNALING_MAX_AGE_MS) {
+          console.log("[RatchetSync] Ignoring stale call signaling", {
+            call_action: payload.call_action,
+            age_seconds: Math.floor(messageAge / 1000),
+          })
+          // ACK and discard without processing
+          try {
+            await apiFetch(`/messages/queue/${item.id}/ack`, { method: "POST" })
+          } catch {
+            // Best-effort ACK
+          }
+          return
+        }
+
+        // Route to CallContext for live signaling
+        if (onCallMessage && senderHandle && inlineIdentityKey) {
+          const callPayload: CallMessagePayload = {
+            type: "call",
+            call_type: payload.call_type ?? "AUDIO",
+            call_id: payload.call_id ?? "",
+            call_action: payload.call_action,
+            sdp: payload.sdp,
+            candidate: payload.candidate,
+            sender_signature: payload.sender_signature ?? "",
+            sender_identity_key: inlineIdentityKey,
+            timestamp: payload.timestamp ?? new Date().toISOString(),
+          }
+          onCallMessage(senderHandle, inlineIdentityKey, callPayload)
+        }
+
+        // ACK without storing in vault (signaling is ephemeral)
+        try {
+          await apiFetch(`/messages/queue/${item.id}/ack`, { method: "POST" })
+        } catch {
+          // Best-effort ACK
+        }
+        return
+      }
+
+      // Call notices (CALL_MISSED, CALL_ENDED, etc.) fall through to normal message handling
+      // and will be stored in vault for chat history
+
       const senderSignature =
         payload.senderSignature ?? payload.sender_signature
       const inlineIdentityKey =
@@ -728,6 +797,7 @@ export function useRatchetSync() {
       sendReceiptEvent,
       settings.sendReadReceipts,
       updateMessageTimestamps,
+      onCallMessage,
     ]
   )
 

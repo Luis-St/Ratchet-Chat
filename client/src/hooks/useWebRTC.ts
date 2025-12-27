@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from "react"
-import { getMediaStream, stopMediaStream } from "@/lib/webrtc"
+import { getMediaStream, getMediaStreamWithOptionalVideo, stopMediaStream } from "@/lib/webrtc"
 
 function logRTC(message: string, data?: Record<string, unknown>): void {
   const timestamp = new Date().toISOString()
@@ -142,6 +142,16 @@ export function useWebRTC(config: UseWebRTCConfig) {
     []
   )
 
+  // Get media with optional video - falls back to audio-only if video fails
+  const getUserMediaWithOptionalVideo = useCallback(
+    async (audio: boolean, video: boolean): Promise<{ stream: MediaStream; hasVideo: boolean }> => {
+      const result = await getMediaStreamWithOptionalVideo(audio, video)
+      localStreamRef.current = result.stream
+      return result
+    },
+    []
+  )
+
   const addLocalStream = useCallback((stream: MediaStream) => {
     // Ensure peer connection exists before adding tracks
     const pc = peerConnectionRef.current ?? createPeerConnection()
@@ -264,6 +274,7 @@ export function useWebRTC(config: UseWebRTCConfig) {
     remoteStream: remoteStreamRef.current,
     createPeerConnection,
     getUserMedia,
+    getUserMediaWithOptionalVideo,
     addLocalStream,
     createOffer,
     createAnswer,

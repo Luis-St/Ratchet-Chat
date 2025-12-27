@@ -1,5 +1,11 @@
 import { encryptTransitEnvelope, decryptTransitBlob, decodeUtf8 } from "./crypto"
 
+// ICE servers for WebRTC connection establishment
+export const ICE_SERVERS: RTCIceServer[] = [
+  { urls: "stun:stun.l.google.com:19302" },
+  { urls: "stun:stun1.l.google.com:19302" },
+]
+
 export type SignalingPayload =
   | { type: "offer"; sdp: string }
   | { type: "answer"; sdp: string }
@@ -76,6 +82,34 @@ export async function getMediaStream(
       }
     }
     throw error
+  }
+}
+
+// Get media stream with optional video - falls back to audio-only if video fails
+export async function getMediaStreamWithOptionalVideo(
+  audio: boolean,
+  video: boolean
+): Promise<{ stream: MediaStream; hasVideo: boolean }> {
+  if (!video) {
+    // Audio only requested
+    const stream = await getMediaStream({ audio, video: false })
+    return { stream, hasVideo: false }
+  }
+
+  // Try audio + video first
+  try {
+    const stream = await getMediaStream({ audio, video: true })
+    return { stream, hasVideo: true }
+  } catch (error) {
+    // If video failed, try audio only
+    console.log("[WebRTC] Video failed, falling back to audio only:", error)
+    try {
+      const stream = await getMediaStream({ audio, video: false })
+      return { stream, hasVideo: false }
+    } catch {
+      // Audio also failed - re-throw the original error
+      throw error
+    }
   }
 }
 

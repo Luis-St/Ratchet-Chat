@@ -391,7 +391,7 @@ export function CallOverlay({
         {/* Hidden audio element for minimized playback */}
         <audio ref={remoteAudioRef} autoPlay playsInline />
 
-        {isVideo && remoteStream ? (
+        {isVideo && remoteStream && remoteStream.getVideoTracks().length > 0 ? (
           <div className={cn(
             "relative bg-muted rounded overflow-hidden shadow-sm shrink-0 pointer-events-none",
             isVertical ? "w-16 h-20" : "w-20 h-14"
@@ -622,8 +622,8 @@ export function CallOverlay({
       <div className="flex-1 flex items-center justify-center relative overflow-hidden">
         {isVideo ? (
           <>
-            {/* Remote video (main) or placeholder */}
-            {remoteStream ? (
+            {/* Remote video (main) or placeholder - show avatar if no video tracks */}
+            {remoteStream && remoteStream.getVideoTracks().length > 0 ? (
               <video
                 ref={remoteVideoRef}
                 autoPlay
@@ -636,6 +636,8 @@ export function CallOverlay({
                   <AvatarFallback className="text-4xl">{initials}</AvatarFallback>
                 </Avatar>
                 <p className="text-muted-foreground">{getStatusText()}</p>
+                {/* Hidden audio for remote stream without video */}
+                {remoteStream && <audio ref={remoteAudioRef} autoPlay playsInline />}
               </div>
             )}
 

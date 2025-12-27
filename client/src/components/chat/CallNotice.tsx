@@ -71,13 +71,13 @@ export function CallNotice({
   })
 
   return (
-    <div className="flex justify-center my-4">
+    <div className="flex justify-center my-4 relative z-20">
       <div
         className={cn(
           "flex items-center gap-2 px-4 py-2 rounded-full text-sm",
-          "bg-muted/50 text-muted-foreground",
-          eventType === "CALL_MISSED" && "text-destructive bg-destructive/10",
-          eventType === "CALL_DECLINED" && "text-orange-600 dark:text-orange-400 bg-orange-100/50 dark:bg-orange-900/20"
+          "bg-background/90 backdrop-blur-sm border border-border/50 shadow-sm text-muted-foreground",
+          eventType === "CALL_MISSED" && "text-destructive bg-destructive/10 border-destructive/20",
+          eventType === "CALL_DECLINED" && "text-orange-600 dark:text-orange-400 bg-orange-50/90 dark:bg-orange-950/80 border-orange-200/50 dark:border-orange-800/30"
         )}
       >
         {getIcon()}

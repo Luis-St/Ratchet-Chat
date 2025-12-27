@@ -25,6 +25,7 @@ import {
 } from "@/lib/crypto"
 import { getInstanceHost, normalizeHandle, splitHandle } from "@/lib/handles"
 import { decodeContactRecord } from "@/lib/messageUtils"
+import { isInCall } from "@/lib/callState"
 import {
   computeClientProof,
   computeVerifier,
@@ -753,6 +754,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return
       }
       if (now - lastRotatedAt >= TRANSPORT_KEY_ROTATION_MS) {
+        // Skip automatic rotation during active calls to avoid signaling issues
+        if (isInCall()) {
+          console.log("[Auth] Skipping key rotation during active call")
+          return
+        }
         await rotateTransportKey()
       }
       await refreshPreviousTransportKey()
