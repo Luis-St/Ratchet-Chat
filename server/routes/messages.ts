@@ -511,7 +511,7 @@ export const createMessagesRouter = (
       return res.status(403).json({ error: "Forbidden" });
     }
 
-    await prisma.incomingQueue.delete({ where: { id } });
+    await prisma.incomingQueue.deleteMany({ where: { id } });
     serverLogger.info("message.queue.acknowledged", {
       id,
       recipient_id: queueItem.recipient_id,
@@ -659,6 +659,82 @@ export const createMessagesRouter = (
     });
 
     return res.json(items);
+  });
+
+  // Delta sync endpoint - fetch messages since a timestamp with cursor pagination
+  router.get("/messages/vault/sync", async (req: Request, res: Response) => {
+    if (!req.user) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const since = typeof req.query.since === "string" ? req.query.since : null;
+    const cursor = typeof req.query.cursor === "string" ? req.query.cursor : null;
+    const limitParam = typeof req.query.limit === "string" ? req.query.limit : "100";
+    const limit = Math.min(Math.max(1, parseInt(limitParam, 10) || 100), 500);
+
+    const where: {
+      owner_id: string;
+      created_at?: { gt: Date };
+      id?: { gt: string };
+    } = {
+      owner_id: req.user.id,
+    };
+
+    if (since) {
+      const sinceDate = new Date(since);
+      if (!Number.isNaN(sinceDate.getTime())) {
+        where.created_at = { gt: sinceDate };
+      }
+    }
+
+    if (cursor) {
+      where.id = { gt: cursor };
+    }
+
+    const items = await prisma.messageVault.findMany({
+      where,
+      orderBy: [{ created_at: "asc" }, { id: "asc" }],
+      take: limit + 1,
+    });
+
+    const hasMore = items.length > limit;
+    const results = hasMore ? items.slice(0, limit) : items;
+    const nextCursor = hasMore && results.length > 0 ? results[results.length - 1].id : null;
+
+    return res.json({
+      items: results,
+      nextCursor,
+      hasMore,
+      syncedAt: new Date().toISOString(),
+    });
+  });
+
+  // Conversation summaries - returns last message per unique sender for sidebar preview
+  router.get("/messages/vault/summaries", async (req: Request, res: Response) => {
+    if (!req.user) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    // Get the most recent message for each unique original_sender_handle
+    const summaries = await prisma.$queryRaw<
+      Array<{
+        id: string;
+        original_sender_handle: string;
+        encrypted_blob: string;
+        iv: string;
+        sender_signature_verified: boolean;
+        created_at: Date;
+      }>
+    >`
+      SELECT DISTINCT ON (original_sender_handle)
+        id, original_sender_handle, encrypted_blob, iv,
+        sender_signature_verified, created_at
+      FROM "MessageVault"
+      WHERE owner_id = ${req.user.id}::uuid
+      ORDER BY original_sender_handle, created_at DESC
+    `;
+
+    return res.json(summaries);
   });
 
 const deleteChatSchema = z.object({

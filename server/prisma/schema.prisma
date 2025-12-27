@@ -65,4 +65,7 @@ model MessageVault {
   sender_signature_verified Boolean  @default(false)
   created_at                DateTime @default(now())
   owner                     User     @relation("VaultOwner", fields: [owner_id], references: [id], onDelete: Cascade)
+
+  @@index([owner_id, created_at])
+  @@index([owner_id, id])
 }

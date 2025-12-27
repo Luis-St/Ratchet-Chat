@@ -1,0 +1,56 @@
+export type Attachment = {
+  filename: string
+  mimeType: string
+  size: number
+  data: string // Base64
+}
+
+export type Contact = {
+  handle: string
+  username: string
+  host: string
+  publicIdentityKey: string
+  publicTransportKey: string
+  createdAt?: string
+}
+
+export type ReactionSummary = {
+  emoji: string
+  count: number
+  reactedByMe: boolean
+}
+
+export type StoredMessage = {
+  id: string
+  peerHandle: string
+  peerUsername?: string
+  peerHost?: string
+  peerIdentityKey?: string
+  peerTransportKey?: string
+  direction: "in" | "out"
+  text: string
+  attachments?: Attachment[]
+  timestamp: string
+  kind?: "message" | "edit" | "delete" | "reaction"
+  editedAt?: string
+  deletedAt?: string
+  reactionAction?: "add" | "remove"
+  deliveredAt?: string
+  processedAt?: string
+  readAt?: string
+  replyTo?: {
+    messageId: string
+  }
+  reactions?: ReactionSummary[]
+  verified: boolean
+  isRead: boolean
+  messageId?: string
+}
+
+export type DirectoryEntry = {
+  id?: string
+  handle: string
+  host: string
+  public_identity_key: string
+  public_transport_key: string
+}

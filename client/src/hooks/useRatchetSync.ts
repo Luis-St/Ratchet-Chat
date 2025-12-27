@@ -126,6 +126,7 @@ export function useRatchetSync() {
   const { settings } = useSettings()
   const isSyncingRef = React.useRef(false)
   const directoryCacheRef = React.useRef(new Map<string, DirectoryEntry>())
+  const processedIdsRef = React.useRef(new Set<string>())
   const [lastSync, setLastSync] = React.useState(0)
 
   const updateMessageTimestamps = React.useCallback(
@@ -599,35 +600,67 @@ export function useRatchetSync() {
       return
     }
     try {
-      const vault = await apiFetch<VaultItem[]>("/messages/vault?order=desc")
+      // Get last sync timestamp from IndexedDB
+      const syncRecord = await db.syncState.get("lastVaultSync")
+      const lastSyncTime = (syncRecord?.value as string) ?? null
+
+      let cursor: string | null = null
+      let totalFetched = 0
+      const maxPages = 10 // Safety limit
+      let pageCount = 0
       const ownerId = user?.id ?? user?.handle ?? ""
-      const existingIds = ownerId
-        ? new Set(
+
+      do {
+        const params = new URLSearchParams()
+        params.set("limit", "100")
+        if (lastSyncTime) params.set("since", lastSyncTime)
+        if (cursor) params.set("cursor", cursor)
+
+        const response = await apiFetch<{
+          items: VaultItem[]
+          nextCursor: string | null
+          hasMore: boolean
+          syncedAt: string
+        }>(`/messages/vault/sync?${params.toString()}`)
+
+        if (response.items.length > 0) {
+          // Filter out items that already exist locally
+          const existingIds = new Set(
             (await db.messages
-              .where("ownerId")
-              .equals(ownerId)
+              .where("id")
+              .anyOf(response.items.map((item) => item.id))
               .primaryKeys()) as string[]
           )
-        : new Set<string>()
-      const missing = vault.filter((item) => !existingIds.has(item.id))
-      if (missing.length === 0) {
-        return
-      }
-      await db.messages.bulkPut(
-        missing.map((item) => ({
-          id: item.id,
-          ownerId: item.owner_id,
-          senderId: item.original_sender_handle,
-          content: JSON.stringify({
-            encrypted_blob: item.encrypted_blob,
-            iv: item.iv,
-          }),
-          verified: item.sender_signature_verified,
-          isRead: false,
-          vaultSynced: true,
-          createdAt: item.created_at,
-        }))
-      )
+          const newItems = response.items.filter((item) => !existingIds.has(item.id))
+
+          if (newItems.length > 0) {
+            await db.messages.bulkPut(
+              newItems.map((item) => ({
+                id: item.id,
+                ownerId: item.owner_id || ownerId,
+                senderId: item.original_sender_handle,
+                content: JSON.stringify({
+                  encrypted_blob: item.encrypted_blob,
+                  iv: item.iv,
+                }),
+                verified: item.sender_signature_verified,
+                isRead: false,
+                vaultSynced: true,
+                createdAt: item.created_at,
+              }))
+            )
+            totalFetched += newItems.length
+          }
+        }
+
+        cursor = response.nextCursor
+        pageCount++
+
+        // Update sync timestamp after last page
+        if (!response.hasMore || pageCount >= maxPages) {
+          await db.syncState.put({ key: "lastVaultSync", value: response.syncedAt })
+        }
+      } while (cursor && pageCount < maxPages)
     } finally {
       setLastSync(Date.now())
     }
@@ -759,7 +792,19 @@ export function useRatchetSync() {
       withCredentials: true,
       auth: token ? { token: `Bearer ${token}` } : undefined,
     })
-    const handler = (payload: QueueItem) => {
+    const handler = async (payload: QueueItem) => {
+      // Deduplication check
+      if (payload?.id && processedIdsRef.current.has(payload.id)) {
+        return
+      }
+      if (payload?.id) {
+        processedIdsRef.current.add(payload.id)
+        // Clean up old IDs (keep last 1000)
+        if (processedIdsRef.current.size > 1000) {
+          const ids = Array.from(processedIdsRef.current)
+          ids.slice(0, 500).forEach((id) => processedIdsRef.current.delete(id))
+        }
+      }
       // If the payload has the encrypted blob, process it directly.
       if (payload && payload.encrypted_blob) {
         void processSingleQueueItem(payload)
@@ -785,6 +830,16 @@ export function useRatchetSync() {
     }) => {
       if (!payload?.message_id || !payload?.encrypted_blob || !payload?.iv) {
         return
+      }
+      // Deduplication check
+      if (processedIdsRef.current.has(payload.message_id)) {
+        return
+      }
+      processedIdsRef.current.add(payload.message_id)
+      // Clean up old IDs (keep last 1000)
+      if (processedIdsRef.current.size > 1000) {
+        const ids = Array.from(processedIdsRef.current)
+        ids.slice(0, 500).forEach((id) => processedIdsRef.current.delete(id))
       }
       // Check if message already exists locally
       const existing = await db.messages.get(payload.message_id)
@@ -822,6 +877,16 @@ export function useRatchetSync() {
     }) => {
       if (!payload?.id || !payload?.encrypted_blob || !payload?.iv) {
         return
+      }
+      // Deduplication check
+      if (processedIdsRef.current.has(payload.id)) {
+        return
+      }
+      processedIdsRef.current.add(payload.id)
+      // Clean up old IDs (keep last 1000)
+      if (processedIdsRef.current.size > 1000) {
+        const ids = Array.from(processedIdsRef.current)
+        ids.slice(0, 500).forEach((id) => processedIdsRef.current.delete(id))
       }
       // Check if message already exists locally
       const existing = await db.messages.get(payload.id)

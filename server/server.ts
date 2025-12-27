@@ -1,4 +1,4 @@
-import express from "express";
+import express, { type Request } from "express";
 import cors from "cors";
 import { PrismaClient } from "@prisma/client";
 import { createServer as createHttpServer } from "http";
@@ -45,6 +45,15 @@ const corsOrigins = new Set(
 );
 const allowAnyCorsOrigin =
   corsOrigins.size === 0 && (process.env.NODE_ENV ?? "development") !== "production";
+const shouldBypassCors = (req: Request) => {
+  const path = req.path;
+  return (
+    path.startsWith("/api/federation/") ||
+    path.startsWith("/federation/") ||
+    path.startsWith("/directory") ||
+    path === "/.well-known/ratchet-chat/federation.json"
+  );
+};
 const server = federationTlsConfig
   ? createHttpsServer(
       {
@@ -187,20 +196,24 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use(
-  cors({
-    origin: (origin, callback) => {
-      if (!origin || allowAnyCorsOrigin) {
-        return callback(null, true);
-      }
-      if (corsOrigins.has(origin)) {
-        return callback(null, true);
-      }
-      return callback(new Error("Not allowed by CORS"));
-    },
-    credentials: true,
-  })
-);
+const corsMiddleware = cors({
+  origin: (origin, callback) => {
+    if (!origin || allowAnyCorsOrigin) {
+      return callback(null, true);
+    }
+    if (corsOrigins.has(origin)) {
+      return callback(null, true);
+    }
+    return callback(new Error("Not allowed by CORS"));
+  },
+  credentials: true,
+});
+app.use((req, res, next) => {
+  if (shouldBypassCors(req)) {
+    return next();
+  }
+  return corsMiddleware(req, res, next);
+});
 app.use(express.json({ limit: "20mb" }));
 
 app.get("/.well-known/ratchet-chat/federation.json", (req, res) => {

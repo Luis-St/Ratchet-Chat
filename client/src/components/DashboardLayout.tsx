@@ -2,52 +2,16 @@
 
 import * as React from "react"
 import { createPortal } from "react-dom"
-import {
-  Check,
-  CheckCheck,
-  CornerUpLeft,
-  Download,
-  FileIcon,
-  Info,
-  MoreVertical,
-  PencilLine,
-  Paperclip,
-  Search,
-  Send,
-  SmilePlus,
-  ShieldCheck,
-  Trash2,
-  X,
-} from "lucide-react"
-import TextareaAutosize from "react-textarea-autosize"
-import ReactMarkdown from "react-markdown"
-import remarkGfm from "remark-gfm"
 import EmojiPicker, { Theme } from "emoji-picker-react"
 import { useTheme } from "next-themes"
 
 import { AppSidebar, type ConversationPreview } from "@/components/app-sidebar"
-import { Avatar, AvatarFallback } from "@/components/ui/avatar"
-import { Button } from "@/components/ui/button"
-import { Card, CardContent } from "@/components/ui/card"
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
-import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import {
   SidebarInset,
   SidebarProvider,
-  SidebarTrigger,
 } from "@/components/ui/sidebar"
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip"
+import { TooltipProvider } from "@/components/ui/tooltip"
 import { useAuth } from "@/context/AuthContext"
 import { useSocket } from "@/context/SocketContext"
 import { useSettings } from "@/hooks/useSettings"
@@ -69,400 +33,21 @@ import { cn } from "@/lib/utils"
 import { RecipientInfoDialog } from "@/components/RecipientInfoDialog"
 import { ImagePreviewDialog } from "@/components/ImagePreviewDialog"
 import { LinkWarningDialog } from "@/components/LinkWarningDialog"
-
-type Attachment = {
-  filename: string
-  mimeType: string
-  size: number
-  data: string // Base64
-}
-
-type Contact = {
-  handle: string
-  username: string
-  host: string
-  publicIdentityKey: string
-  publicTransportKey: string
-  createdAt?: string
-}
-
-type ReactionSummary = {
-  emoji: string
-  count: number
-  reactedByMe: boolean
-}
-
-type StoredMessage = {
-  id: string
-  peerHandle: string
-  peerUsername?: string
-  peerHost?: string
-  peerIdentityKey?: string
-  peerTransportKey?: string
-  direction: "in" | "out"
-  text: string
-  attachments?: Attachment[]
-  timestamp: string
-  kind?: "message" | "edit" | "delete" | "reaction"
-  editedAt?: string
-  deletedAt?: string
-  reactionAction?: "add" | "remove"
-  deliveredAt?: string
-  processedAt?: string
-  readAt?: string
-  replyTo?: {
-    messageId: string
-  }
-  reactions?: ReactionSummary[]
-  verified: boolean
-  isRead: boolean
-  messageId?: string
-}
-
-type DirectoryEntry = {
-  id?: string
-  handle: string
-  host: string
-  public_identity_key: string
-  public_transport_key: string
-}
-
-async function decodeContactRecord(
-  record: ContactRecord,
-  masterKey: CryptoKey
-): Promise<Contact | null> {
-  try {
-    const raw = record.content
-    const envelope = JSON.parse(raw) as { encrypted_blob: string; iv: string }
-    const plaintext = await decryptString(masterKey, {
-      ciphertext: envelope.encrypted_blob,
-      iv: envelope.iv,
-    })
-    const payload = JSON.parse(plaintext) as Partial<Contact>
-    if (!payload.handle) {
-      return null
-    }
-    const parts = splitHandle(payload.handle)
-    return {
-      handle: payload.handle,
-      username: payload.username ?? parts?.username ?? payload.handle,
-      host: payload.host ?? parts?.host ?? "",
-      publicIdentityKey: payload.publicIdentityKey ?? "",
-      publicTransportKey: payload.publicTransportKey ?? "",
-      createdAt: record.createdAt,
-    }
-  } catch {
-    return null
-  }
-}
-
-async function saveContactRecord(
-  masterKey: CryptoKey,
-  ownerId: string,
-  contact: Contact
-) {
-  const encrypted = await encryptString(
-    masterKey,
-    JSON.stringify({
-      handle: contact.handle,
-      username: contact.username,
-      host: contact.host,
-      publicIdentityKey: contact.publicIdentityKey,
-      publicTransportKey: contact.publicTransportKey,
-    })
-  )
-  await db.contacts.put({
-    id: contact.handle,
-    ownerId,
-    content: JSON.stringify({
-      encrypted_blob: encrypted.ciphertext,
-      iv: encrypted.iv,
-    }),
-    createdAt: contact.createdAt || new Date().toISOString(),
-  })
-}
-
-async function decodeMessageRecord(
-  record: MessageRecord,
-  masterKey: CryptoKey,
-  fallbackPeerHandle: string
-): Promise<StoredMessage | null> {
-  try {
-    const raw = record.content
-    const envelope = JSON.parse(raw) as { encrypted_blob: string; iv: string }
-    const plaintext = await decryptString(masterKey, {
-      ciphertext: envelope.encrypted_blob,
-      iv: envelope.iv,
-    })
-    let payload: {
-      text?: string
-      content?: string
-      attachments?: Attachment[]
-      peerId?: string
-      peerHandle?: string
-      peerUsername?: string
-      peerHost?: string
-      direction?: "in" | "out"
-      timestamp?: string
-      peerIdentityKey?: string
-      peerTransportKey?: string
-      messageId?: string
-      message_id?: string
-      type?: "edit" | "delete" | "reaction" | "receipt" | "message"
-      edited_at?: string
-      editedAt?: string
-      deleted_at?: string
-      deletedAt?: string
-      reaction_action?: "add" | "remove"
-      reactionAction?: "add" | "remove"
-      reaction_emoji?: string
-      reactionEmoji?: string
-      action?: "add" | "remove"
-      emoji?: string
-      delivered_at?: string
-      deliveredAt?: string
-      processed_at?: string
-      processedAt?: string
-      read_at?: string
-      readAt?: string
-      reply_to_message_id?: string
-      replyToMessageId?: string
-      reply_to_text?: string
-      replyToText?: string
-      reply_to_sender_handle?: string
-      replyToSenderHandle?: string
-      reply_to_sender_name?: string
-      replyToSenderName?: string
-    } = {}
-    try {
-      payload = JSON.parse(plaintext) as typeof payload
-    } catch {
-      payload = { text: plaintext }
-    }
-    if (payload.type === "receipt") {
-      return null
-    }
-    const isReaction = payload.type === "reaction"
-    const reactionEmoji =
-      payload.reaction_emoji ?? payload.reactionEmoji ?? payload.emoji
-    const text = isReaction
-      ? reactionEmoji ?? payload.text ?? payload.content ?? plaintext
-      : payload.text ?? payload.content ?? plaintext
-    const kind =
-      payload.type === "edit"
-        ? "edit"
-        : payload.type === "delete"
-        ? "delete"
-        : payload.type === "reaction"
-        ? "reaction"
-        : "message"
-    const direction = payload.direction ?? "in"
-    const isRead = record.isRead ?? direction === "out"
-    const messageId =
-      payload.messageId ??
-      payload.message_id ??
-      (direction === "out" ? record.id : undefined)
-    const replyMessageId =
-      payload.reply_to_message_id ?? payload.replyToMessageId
-    const fallbackHandle = fallbackPeerHandle
-    let resolvedHandle =
-      payload.peerHandle ?? payload.peerId ?? fallbackHandle
-    if (direction === "in" && fallbackHandle && resolvedHandle !== fallbackHandle) {
-      resolvedHandle = fallbackHandle
-    }
-    return {
-      id: record.id,
-      peerHandle: resolvedHandle,
-      peerUsername: payload.peerUsername,
-      peerHost: payload.peerHost,
-      peerIdentityKey: payload.peerIdentityKey,
-      peerTransportKey: payload.peerTransportKey,
-      direction,
-      text,
-      attachments: payload.attachments,
-      timestamp: payload.timestamp ?? record.createdAt,
-      kind,
-      editedAt: payload.edited_at ?? payload.editedAt,
-      deletedAt: payload.deleted_at ?? payload.deletedAt,
-      reactionAction:
-        payload.reaction_action ??
-        payload.reactionAction ??
-        payload.action,
-      deliveredAt: payload.delivered_at ?? payload.deliveredAt,
-      processedAt: payload.processed_at ?? payload.processedAt,
-      readAt: payload.read_at ?? payload.readAt,
-      replyTo: replyMessageId
-        ? {
-            messageId: replyMessageId,
-          }
-        : undefined,
-      verified: record.verified,
-      isRead,
-      messageId,
-    }
-  } catch {
-    return null
-  }
-}
-
-function getEventTimestamp(message: StoredMessage) {
-  const value =
-    message.editedAt ??
-    message.deletedAt ??
-    message.timestamp
-  const parsed = new Date(value)
-  return Number.isNaN(parsed.valueOf()) ? 0 : parsed.valueOf()
-}
-
-function applyMessageEvents(messages: StoredMessage[]) {
-  const edits = messages.filter(
-    (message) => message.kind === "edit" && message.messageId
-  )
-  const deletes = messages.filter(
-    (message) => message.kind === "delete" && message.messageId
-  )
-  const reactions = messages.filter(
-    (message) =>
-      message.kind === "reaction" && message.messageId && message.text
-  )
-  const latestEdits = new Map<string, StoredMessage>()
-  for (const edit of edits) {
-    if (!edit.messageId) continue
-    const existing = latestEdits.get(edit.messageId)
-    if (!existing || getEventTimestamp(edit) > getEventTimestamp(existing)) {
-      latestEdits.set(edit.messageId, edit)
-    }
-  }
-  const latestDeletes = new Map<string, StoredMessage>()
-  for (const deletion of deletes) {
-    if (!deletion.messageId) continue
-    const existing = latestDeletes.get(deletion.messageId)
-    if (!existing || getEventTimestamp(deletion) > getEventTimestamp(existing)) {
-      latestDeletes.set(deletion.messageId, deletion)
-    }
-  }
-  const reactionsByMessage = new Map<
-    string,
-    Map<string, { byMe: boolean; byPeer: boolean }>
-  >()
-  const sortedReactions = [...reactions].sort(
-    (a, b) => getEventTimestamp(a) - getEventTimestamp(b)
-  )
-  for (const reaction of sortedReactions) {
-    if (!reaction.messageId || !reaction.text || !reaction.verified) continue
-    const key = `${reaction.messageId}:${reaction.peerHandle}`
-    const bucket =
-      reactionsByMessage.get(key) ??
-      new Map<string, { byMe: boolean; byPeer: boolean }>()
-    const state = bucket.get(reaction.text) ?? { byMe: false, byPeer: false }
-    const action = reaction.reactionAction === "remove" ? "remove" : "add"
-    if (reaction.direction === "out") {
-      state.byMe = action === "add"
-    } else {
-      state.byPeer = action === "add"
-    }
-    bucket.set(reaction.text, state)
-    reactionsByMessage.set(key, bucket)
-  }
-  const next: StoredMessage[] = []
-  for (const message of messages) {
-    if (
-      message.kind === "edit" ||
-      message.kind === "delete" ||
-      message.kind === "reaction"
-    ) {
-      continue
-    }
-    const targetId = message.messageId ?? message.id
-    const reactionKey = `${targetId}:${message.peerHandle}`
-    const reactionBucket = reactionsByMessage.get(reactionKey)
-    const reactionList = reactionBucket
-      ? Array.from(reactionBucket.entries())
-          .map(([emoji, state]) => {
-            const count = (state.byMe ? 1 : 0) + (state.byPeer ? 1 : 0)
-            if (count === 0) {
-              return null
-            }
-            return { emoji, count, reactedByMe: state.byMe }
-          })
-          .filter(Boolean) as ReactionSummary[]
-      : undefined
-    const deletion = targetId ? latestDeletes.get(targetId) : null
-    if (
-      deletion &&
-      deletion.verified &&
-      deletion.peerHandle === message.peerHandle &&
-      deletion.direction === message.direction
-    ) {
-      continue
-    }
-    const edit = targetId ? latestEdits.get(targetId) : null
-    if (
-      edit &&
-      edit.verified &&
-      edit.peerHandle === message.peerHandle &&
-      edit.direction === message.direction
-    ) {
-      next.push({
-        ...message,
-        text: edit.text,
-        editedAt: edit.editedAt ?? edit.timestamp,
-        attachments: message.attachments,
-        reactions: reactionList,
-      })
-      continue
-    }
-    if (reactionList && reactionList.length > 0) {
-      next.push({ ...message, reactions: reactionList })
-    } else {
-      next.push({ ...message })
-    }
-  }
-  return next
-}
-
-function truncateText(value: string, max = 140) {
-  if (value.length <= max) return value
-  return value.slice(0, Math.max(0, max - 3)) + "..."
-}
-
-function getReplyPreviewText(message: StoredMessage) {
-  const trimmed = message.text?.trim()
-  if (trimmed) {
-    return trimmed
-  }
-  if (message.attachments?.length) {
-    if (message.attachments.length === 1) {
-      return message.attachments[0].filename || "Attachment"
-    }
-    return `${message.attachments.length} attachments`
-  }
-  return "Message"
-}
-
-const DELETE_SIGNATURE_BODY = "ratchet-chat:delete"
-const REACTION_PICKER_SIZE = 320
-const REACTION_PICKER_GUTTER = 12
-const REACTION_PICKER_OFFSET = 8
-
-function formatTimestamp(isoString: string) {
-  if (!isoString) return ""
-  try {
-    const date = new Date(isoString)
-    if (Number.isNaN(date.getTime())) return ""
-    const now = new Date()
-    if (
-      date.getDate() === now.getDate() &&
-      date.getMonth() === now.getMonth() &&
-      date.getFullYear() === now.getFullYear()
-    ) {
-      return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-    }
-    return date.toLocaleDateString()
-  } catch {
-    return ""
-  }
-}
+import { MessageBubble, ComposeArea, ChatHeader } from "@/components/chat"
+import type { Contact, StoredMessage, DirectoryEntry, Attachment } from "@/types/dashboard"
+import {
+  decodeContactRecord,
+  saveContactRecord,
+  decodeMessageRecord,
+  applyMessageEvents,
+  formatTimestamp,
+  truncateText,
+  getReplyPreviewText,
+  DELETE_SIGNATURE_BODY,
+  REACTION_PICKER_SIZE,
+  REACTION_PICKER_GUTTER,
+  REACTION_PICKER_OFFSET,
+} from "@/lib/messageUtils"
 
 export function DashboardLayout() {
   const { user, masterKey, identityPrivateKey, transportPrivateKey, logout } = useAuth()
@@ -2039,20 +1624,6 @@ export function DashboardLayout() {
     await handleSendMessage()
   }, [editingMessage, handleEdit, handleSendMessage])
 
-  const replyTargetForComposer = replyToMessage
-    ? activeMessageLookup.get(replyToMessage.messageId ?? replyToMessage.id)
-    : null
-  const replyPreviewText = replyTargetForComposer
-    ? truncateText(getReplyPreviewText(replyTargetForComposer), 120)
-    : "Message deleted"
-  const replySenderLabel = replyTargetForComposer
-    ? replyTargetForComposer.direction === "out"
-      ? "You"
-      : replyTargetForComposer.peerUsername ??
-        replyTargetForComposer.peerHandle ??
-        "Unknown"
-    : "Unknown"
-
   const portalRoot =
     typeof document !== "undefined" ? document.body : null
   const reactionPickerPortal =
@@ -2127,92 +1698,21 @@ export function DashboardLayout() {
         onSearchChange={setSidebarSearchQuery}
       />
       <SidebarInset className="flex h-dvh flex-col overflow-hidden bg-background">
-        <header className="flex flex-none items-center gap-3 border-b bg-background/85 px-5 py-4 backdrop-blur">
-          <SidebarTrigger className="-ml-1" />
-          <div 
-            className="flex flex-1 items-center gap-3 cursor-pointer transition-opacity hover:opacity-80 -ml-2 pl-2 rounded-md py-1 hover:bg-muted/50"
-            onClick={() => activeContact && setShowRecipientInfo(true)}
-          >
-            {activeContact && (
-              <Avatar className="h-10 w-10 bg-emerald-600 text-white">
-                <AvatarFallback>
-                  {activeContact.username.slice(0, 2).toUpperCase()}
-                </AvatarFallback>
-              </Avatar>
-            )}
-            <div className="flex-1">
-              <p className="text-sm font-semibold">
-                {activeContact?.username ?? "Select a chat"}
-              </p>
-              {activeContact ? (
-                activeContact.handle && typingStatus[activeContact.handle] ? (
-                  <p className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 animate-pulse">
-                    Typing...
-                  </p>
-                ) : (
-                  <p className="text-xs text-muted-foreground">
-                    Encrypted session
-                  </p>
-                )
-              ) : (
-                <p className="text-xs text-muted-foreground">
-                  Start by adding a username on the left.
-                </p>
-              )}
-            </div>
-          </div>
-          <div className="ml-auto flex items-center gap-2">
-            {isChatSearchOpen ? (
-              <div className="relative w-40 md:w-60">
-                <Input
-                  placeholder="Search in chat..."
-                  className="h-8 pr-8"
-                  value={chatSearchQuery}
-                  onChange={(e) => setChatSearchQuery(e.target.value)}
-                  autoFocus
-                />
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="absolute right-0 top-0 h-8 w-8 text-muted-foreground hover:bg-transparent"
-                  onClick={() => {
-                    setChatSearchQuery("")
-                    setIsChatSearchOpen(false)
-                  }}
-                >
-                  <Search className="h-4 w-4 rotate-45" />
-                </Button>
-              </div>
-            ) : (
-            <Button
-              variant="ghost"
-              size="icon"
-              className="text-muted-foreground"
-              onClick={() => setIsChatSearchOpen(true)}
-              disabled={!activeContact}
-            >
-              <Search />
-            </Button>
-            )}
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="icon" className="text-muted-foreground">
-                  <MoreVertical />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={handleExportChat}>
-                  <Download className="mr-2 h-4 w-4" />
-                  <span>Export Chat</span>
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={handleDeleteChat} className="text-destructive focus:text-destructive">
-                  <Trash2 className="mr-2 h-4 w-4" />
-                  <span>Delete Chat</span>
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-        </header>
+        <ChatHeader
+          activeContact={activeContact}
+          typingStatus={typingStatus}
+          isChatSearchOpen={isChatSearchOpen}
+          chatSearchQuery={chatSearchQuery}
+          onChatSearchQueryChange={setChatSearchQuery}
+          onChatSearchOpen={() => setIsChatSearchOpen(true)}
+          onChatSearchClose={() => {
+            setChatSearchQuery("")
+            setIsChatSearchOpen(false)
+          }}
+          onShowRecipientInfo={() => setShowRecipientInfo(true)}
+          onExportChat={handleExportChat}
+          onDeleteChat={handleDeleteChat}
+        />
 
         <div className="relative flex flex-1 flex-col overflow-hidden isolate">
           <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,_var(--chat-glow),_transparent_55%)] -z-10" />
@@ -2229,375 +1729,39 @@ export function DashboardLayout() {
                 </div>
               )}
               {activeMessages.map((message) => {
-                const meta = formatTimestamp(message.timestamp)
-                const deliveredAt =
-                  message.direction === "out" ? message.deliveredAt : null
-                const processedAt =
-                  message.direction === "out" ? message.processedAt : null
-                const readAt = message.direction === "out" ? message.readAt : null
-                const receiptState = readAt
-                  ? "READ"
-                  : processedAt
-                  ? "PROCESSED"
-                  : deliveredAt
-                  ? "DELIVERED"
-                  : null
                 const isPickerOpen = reactionPickerId === message.id
-                const replyTarget = message.replyTo?.messageId
-                  ? activeMessageLookup.get(message.replyTo.messageId)
-                  : null
-                const replySender = replyTarget
-                  ? replyTarget.direction === "out"
-                    ? "You"
-                    : replyTarget.peerUsername ?? replyTarget.peerHandle
-                  : null
-                const replyPreview = replyTarget
-                  ? truncateText(getReplyPreviewText(replyTarget), 90)
-                  : "Message deleted"
                 const showActions = isTouchActions
                   ? activeActionMessageId === message.id
                   : isPickerOpen
                 return (
-                  <div
+                  <MessageBubble
                     key={message.id}
-                    id={`message-${message.id}`}
-                    className={cn(
-                      "flex w-full",
-                      message.direction === "out"
-                        ? "justify-end"
-                        : "justify-start"
-                    )}
-                  >
-                    <div
-                      className={cn(
-                        "group flex items-start gap-2",
-                        message.direction === "out"
-                          ? "flex-row-reverse"
-                          : "flex-row"
-                      )}
-                      data-message-id={message.id}
-                    >
-                      <div
-                        className={cn(
-                          "flex w-fit max-w-[92%] flex-col",
-                          message.direction === "out"
-                            ? "items-end"
-                            : "items-start"
-                        )}
-                      >
-                        <div
-                          className={cn(
-                            "w-fit max-w-full px-2.5 py-2.5 text-sm leading-relaxed shadow-sm transition-all duration-500 break-words [word-break:break-word] overflow-hidden",
-                            highlightedMessageId === message.id &&
-                              "ring-2 ring-emerald-500 ring-offset-2 dark:ring-offset-slate-900 scale-[1.02]",
-                            message.direction === "out"
-                              ? "bg-emerald-100 dark:bg-emerald-900 text-foreground rounded-2xl rounded-br-sm"
-                              : "bg-card dark:bg-muted text-foreground rounded-2xl rounded-bl-sm"
-                          )}
-                          onClick={(event) => handleMessageTap(event, message)}
-                        >
-                          {message.replyTo?.messageId ? (
-                            <div
-                              data-no-action-toggle="true"
-                              role={replyTarget ? "button" : undefined}
-                              onClick={() => {
-                                if (replyTarget) {
-                                  setScrollToMessageId(replyTarget.id)
-                                }
-                              }}
-                              className={cn(
-                                "mb-2 flex flex-col gap-0.5 rounded-md px-2 py-1 text-[11px]",
-                                message.direction === "out"
-                                  ? "bg-emerald-300/70 text-emerald-950 dark:bg-emerald-800/70 dark:text-emerald-100"
-                                  : "bg-slate-200/80 text-slate-700 dark:bg-slate-700/60 dark:text-slate-200",
-                                replyTarget &&
-                                  (message.direction === "out"
-                                    ? "cursor-pointer hover:bg-emerald-300/90 dark:hover:bg-emerald-800/90"
-                                    : "cursor-pointer hover:bg-slate-200/95 dark:hover:bg-slate-700/80")
-                              )}
-                            >
-                              {replyTarget ? (
-                                <>
-                                  <span className="font-semibold">
-                                    Replying to {replySender}
-                                  </span>
-                                  <span className="truncate text-muted-foreground">
-                                    {replyPreview}
-                                  </span>
-                                </>
-                              ) : (
-                                <span className="text-muted-foreground">
-                                  Message deleted
-                                </span>
-                              )}
-                            </div>
-                          ) : null}
-                          {message.attachments?.map((att, i) => (
-                            <div
-                              key={i}
-                              className="mb-2 rounded-lg overflow-hidden"
-                              data-no-action-toggle="true"
-                            >
-                              {att.mimeType.startsWith("image/") ? (
-                                // eslint-disable-next-line @next/next/no-img-element
-                                <img
-                                  src={`data:${att.mimeType};base64,${att.data}`}
-                                  alt={att.filename}
-                                  className="max-w-full h-auto max-h-64 object-cover cursor-pointer hover:opacity-90 transition-opacity"
-                                  onClick={() =>
-                                    setPreviewImage(
-                                      `data:${att.mimeType};base64,${att.data}`
-                                    )
-                                  }
-                                />
-                              ) : (
-                                <a
-                                  href={`data:${att.mimeType};base64,${att.data}`}
-                                  download={att.filename}
-                                  className="flex items-center gap-2 p-3 bg-background/50 rounded-lg hover:bg-background/80 transition-colors"
-                                >
-                                  <div className="p-2 bg-emerald-500/10 rounded-md">
-                                    <FileIcon className="h-5 w-5 text-emerald-600 dark:text-emerald-400" />
-                                  </div>
-                                  <div className="flex-1 min-w-0">
-                                    <p className="font-medium truncate">
-                                      {att.filename}
-                                    </p>
-                                    <p className="text-xs text-muted-foreground">
-                                      {(att.size / 1024).toFixed(1)} KB
-                                    </p>
-                                  </div>
-                                  <Download className="h-4 w-4 text-muted-foreground" />
-                                </a>
-                              )}
-                            </div>
-                          ))}
-                          {message.text && (
-                            <div className="whitespace-pre-wrap prose prose-sm dark:prose-invert prose-emerald max-w-none prose-p:leading-relaxed prose-pre:bg-muted prose-pre:p-2 prose-pre:rounded-md prose-code:text-emerald-600 dark:prose-code:text-emerald-400 break-words [word-break:break-word]">
-                              <ReactMarkdown
-                                remarkPlugins={[remarkGfm]}
-                                components={{
-                                  a: ({ node, href, children, ...props }) => {
-                                    return (
-                                      <a
-                                        href={href}
-                                        onClick={(e) => {
-                                          e.preventDefault()
-                                          if (href) setPendingLink(href)
-                                        }}
-                                        {...props}
-                                      >
-                                        {children}
-                                      </a>
-                                    )
-                                  },
-                                }}
-                              >
-                                {message.text}
-                              </ReactMarkdown>
-                            </div>
-                          )}
-                          <div className="mt-2 flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-muted-foreground">
-                            <span>{meta}</span>
-                            {message.editedAt ? <span>Edited</span> : null}
-                            {message.verified && (
-                              <ShieldCheck
-                                className="h-3 w-3 text-emerald-500"
-                                aria-label="Verified Signature"
-                              />
-                            )}
-                          {receiptState ? (
-                            receiptState === "DELIVERED" ? (
-                              <Check className="h-3 w-3" aria-label="Sent" />
-                            ) : receiptState === "PROCESSED" ? (
-                              <CheckCheck
-                                className="h-3 w-3"
-                                aria-label="Delivered"
-                              />
-                            ) : receiptState === "READ" ? (
-                              <CheckCheck
-                                className="h-3 w-3 text-sky-500"
-                                aria-label="Read"
-                              />
-                            ) : null
-                          ) : null}
-                          </div>
-                        </div>
-                        {message.reactions && message.reactions.length > 0 ? (
-                          <div
-                            className={cn(
-                              "-mt-1 inline-flex flex-wrap items-center gap-1 rounded-full border px-2 py-1 text-[11px] shadow-sm",
-                              message.direction === "out"
-                                ? "self-end border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900/40 dark:bg-emerald-900/30 dark:text-emerald-200"
-                                : "self-start border-border bg-card/90 text-muted-foreground"
-                            )}
-                          >
-                            {message.reactions.map((reaction) => (
-                              <button
-                                key={reaction.emoji}
-                                type="button"
-                                className={cn(
-                                  "inline-flex items-center gap-1 rounded-full px-2 py-0.5 transition-colors",
-                                  reaction.reactedByMe
-                                    ? "bg-emerald-200/70 text-emerald-900 dark:bg-emerald-800/60 dark:text-emerald-100"
-                                    : "hover:bg-muted/80"
-                                )}
-                                onClick={() =>
-                                  void handleSendReaction(
-                                    message,
-                                    reaction.emoji,
-                                    reaction.reactedByMe ? "remove" : "add"
-                                  )
-                                }
-                                disabled={isBusy}
-                                aria-pressed={reaction.reactedByMe}
-                                aria-label={`React ${reaction.emoji}`}
-                              >
-                                <span>{reaction.emoji}</span>
-                                <span className="text-[10px]">
-                                  {reaction.count}
-                                </span>
-                              </button>
-                            ))}
-                          </div>
-                        ) : null}
-                      </div>
-                      <div
-                        className={cn(
-                          "relative flex items-center opacity-0 transition-opacity duration-200 group-hover:opacity-100",
-                          (isPickerOpen || showActions) && "opacity-100",
-                          isTouchActions &&
-                            !(isPickerOpen || showActions) &&
-                            "pointer-events-none"
-                        )}
-                      >
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              data-reaction-button="true"
-                              className="h-6 w-6 text-slate-400 hover:text-slate-600"
-                              onClick={(event) => {
-                                if (isPickerOpen) {
-                                  setReactionPickerId(null)
-                                  return
-                                }
-                                reactionPickerAnchorRef.current = event.currentTarget
-                                setActiveActionMessageId(message.id)
-                                setReactionPickerId(message.id)
-                              }}
-                              disabled={Boolean(editingMessage) || isBusy}
-                            >
-                              <SmilePlus className="h-4 w-4" />
-                            </Button>
-                          </TooltipTrigger>
-                          <TooltipContent side="top" className="text-xs">
-                            Add reaction
-                          </TooltipContent>
-                        </Tooltip>
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-6 w-6 text-slate-400 hover:text-slate-600"
-                              onClick={() => beginReply(message)}
-                              disabled={Boolean(editingMessage) || isBusy}
-                            >
-                              <CornerUpLeft className="h-4 w-4" />
-                            </Button>
-                          </TooltipTrigger>
-                          <TooltipContent side="top" className="text-xs">
-                            Reply
-                          </TooltipContent>
-                        </Tooltip>
-                        {message.direction === "out" && message.text ? (
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-6 w-6 text-slate-400 hover:text-slate-600"
-                                onClick={() => beginEdit(message)}
-                                disabled={Boolean(editingMessage)}
-                              >
-                                <PencilLine className="h-4 w-4" />
-                              </Button>
-                            </TooltipTrigger>
-                            <TooltipContent side="top" className="text-xs">
-                              Edit message
-                            </TooltipContent>
-                          </Tooltip>
-                        ) : null}
-                        {message.direction === "out" ? (
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-6 w-6 text-slate-400 hover:text-destructive"
-                                onClick={() => void handleDeleteMessage(message)}
-                                disabled={Boolean(editingMessage) || isBusy}
-                              >
-                                <Trash2 className="h-4 w-4" />
-                              </Button>
-                            </TooltipTrigger>
-                            <TooltipContent side="top" className="text-xs">
-                              Delete message
-                            </TooltipContent>
-                          </Tooltip>
-                        ) : null}
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <Button variant="ghost" size="icon" className="h-6 w-6 text-slate-400 hover:text-slate-600">
-                              <Info className="h-4 w-4" />
-                            </Button>
-                          </TooltipTrigger>
-                          <TooltipContent
-                            side="top"
-                            className="text-xs"
-                          >
-                            <div className="space-y-1">
-                              <p>
-                                <span className="font-semibold">Status:</span>{" "}
-                                {message.direction === "out"
-                                  ? receiptState
-                                    ? receiptState.toLowerCase()
-                                    : "sending..."
-                                  : "received"}
-                              </p>
-                              {message.direction === "out" && deliveredAt ? (
-                                <p>
-                                  <span className="font-semibold">
-                                    Delivered:
-                                  </span>{" "}
-                                  {new Date(deliveredAt).toLocaleString()}
-                                </p>
-                              ) : null}
-                              {message.direction === "out" && processedAt ? (
-                                <p>
-                                  <span className="font-semibold">
-                                    Processed:
-                                  </span>{" "}
-                                  {new Date(processedAt).toLocaleString()}
-                                </p>
-                              ) : null}
-                              {message.direction === "out" && readAt ? (
-                                <p>
-                                  <span className="font-semibold">Read:</span>{" "}
-                                  {new Date(readAt).toLocaleString()}
-                                </p>
-                              ) : null}
-                              <p><span className="font-semibold">Signature:</span> {message.verified ? 'Verified' : 'Unverified'}</p>
-                              <p><span className="font-semibold">Time:</span> {new Date(message.timestamp).toLocaleString()}</p>
-                              <p className="font-mono text-[9px] text-muted-foreground break-all">{message.id}</p>
-                            </div>
-                          </TooltipContent>
-                        </Tooltip>
-                      </div>
-                    </div>
-                  </div>
+                    message={message}
+                    activeMessageLookup={activeMessageLookup}
+                    isPickerOpen={isPickerOpen}
+                    showActions={showActions}
+                    isTouchActions={isTouchActions}
+                    isBusy={isBusy}
+                    editingMessage={editingMessage}
+                    highlightedMessageId={highlightedMessageId}
+                    onMessageTap={handleMessageTap}
+                    onScrollToMessage={(id) => setScrollToMessageId(id)}
+                    onPreviewImage={setPreviewImage}
+                    onPendingLink={setPendingLink}
+                    onReaction={(msg, emoji, action) => void handleSendReaction(msg, emoji, action)}
+                    onReactionPickerOpen={(event, messageId) => {
+                      if (messageId) {
+                        reactionPickerAnchorRef.current = event.currentTarget
+                        setActiveActionMessageId(messageId)
+                        setReactionPickerId(messageId)
+                      } else {
+                        setReactionPickerId(null)
+                      }
+                    }}
+                    onReply={beginReply}
+                    onEdit={beginEdit}
+                    onDelete={(msg) => void handleDeleteMessage(msg)}
+                  />
                 )
               })}
               <div ref={scrollRef} />
@@ -2605,136 +1769,27 @@ export function DashboardLayout() {
           </ScrollArea>
         </div>
 
-        <div className="flex-none border-t bg-background/80 px-5 py-4 backdrop-blur">
-          {editingMessage && (
-            <div className="mb-3 flex items-center justify-between gap-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-900 dark:border-emerald-900/30 dark:bg-emerald-900/20 dark:text-emerald-100">
-              <div className="min-w-0">
-                <p className="font-semibold">Editing message</p>
-                <p className="truncate text-[10px] text-emerald-700 dark:text-emerald-300">
-                  {editingMessage.text}
-                </p>
-              </div>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-7 w-7 text-emerald-700 hover:text-emerald-900 dark:text-emerald-200 dark:hover:text-emerald-50"
-                onClick={cancelEdit}
-              >
-                <X className="h-4 w-4" />
-              </Button>
-            </div>
-          )}
-          {!editingMessage && replyToMessage ? (
-            <div className="mb-3 flex items-center justify-between gap-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-900 dark:border-emerald-900/30 dark:bg-emerald-900/20 dark:text-emerald-100">
-              <div className="min-w-0">
-                <p className="font-semibold">Replying to {replySenderLabel}</p>
-                <p className="truncate text-[10px] text-emerald-700 dark:text-emerald-300">
-                  {replyPreviewText}
-                </p>
-              </div>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-7 w-7 text-emerald-700 hover:text-emerald-900 dark:text-emerald-200 dark:hover:text-emerald-50"
-                onClick={cancelReply}
-              >
-                <X className="h-4 w-4" />
-              </Button>
-            </div>
-          ) : null}
-          {attachment && (
-            <div className="mb-3 flex items-center justify-between rounded-lg border bg-card p-2 shadow-sm">
-              <div className="flex items-center gap-3">
-                {attachment.type.startsWith("image/") ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    src={`data:${attachment.type};base64,${attachment.data}`}
-                    alt="Preview"
-                    className="h-10 w-10 rounded-md object-cover"
-                  />
-                ) : (
-                  <div className="flex h-10 w-10 items-center justify-center rounded-md bg-muted">
-                    <FileIcon className="h-5 w-5 text-muted-foreground" />
-                  </div>
-                )}
-                <div className="flex flex-col">
-                  <span className="text-xs font-medium max-w-[200px] truncate">{attachment.name}</span>
-                  <span className="text-[10px] text-muted-foreground">{(attachment.size / 1024).toFixed(1)} KB</span>
-                </div>
-              </div>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-8 w-8 text-muted-foreground hover:text-destructive"
-                onClick={() => {
-                  setAttachment(null)
-                  if (fileInputRef.current) fileInputRef.current.value = ""
-                }}
-              >
-                <X className="h-4 w-4" />
-              </Button>
-            </div>
-          )}
-          <Card className="border-border bg-card/90 shadow-sm">
-            <CardContent className="flex items-end gap-3 p-3">
-              <input
-                type="file"
-                className="hidden"
-                ref={fileInputRef}
-                onChange={handleFileSelect}
-              />
-              <Button 
-                variant="ghost" 
-                size="icon" 
-                className="text-muted-foreground shrink-0 mb-1"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={!activeContact || isBusy || Boolean(editingMessage)}
-              >
-                <Paperclip />
-              </Button>
-              <TextareaAutosize
-                ref={textareaRef}
-                placeholder={
-                  editingMessage
-                    ? "Edit message"
-                    : activeContact
-                    ? `Message ${activeContact.username}`
-                    : "Select a chat to start messaging"
-                }
-                className="flex-1 min-h-[40px] max-h-[200px] w-full resize-none border-none bg-transparent py-2.5 px-0 text-sm shadow-none focus-visible:ring-0 outline-none"
-                value={composeText}
-                onChange={(event) => {
-                  setComposeText(event.target.value)
-                  handleTyping()
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" && !event.shiftKey) {
-                    event.preventDefault()
-                    void handleSubmit()
-                  }
-                }}
-                disabled={!activeContact || isBusy}
-              />
-              <Button
-                className="bg-emerald-600 text-white hover:bg-emerald-600/90 shrink-0 mb-1"
-                disabled={
-                  (!composeText.trim() && (!attachment || Boolean(editingMessage))) ||
-                  !activeContact ||
-                  isBusy
-                }
-                onClick={() => void handleSubmit()}
-              >
-                <Send className="h-4 w-4 mr-2" />
-                {editingMessage ? "Save" : "Send"}
-              </Button>
-            </CardContent>
-          </Card>
-          {sendError ? (
-            <p className="mt-2 text-center text-xs text-destructive">
-              {sendError}
-            </p>
-          ) : null}
-        </div>
+        <ComposeArea
+          activeContact={activeContact}
+          composeText={composeText}
+          onComposeTextChange={setComposeText}
+          editingMessage={editingMessage}
+          replyToMessage={replyToMessage}
+          attachment={attachment}
+          isBusy={isBusy}
+          sendError={sendError}
+          textareaRef={textareaRef}
+          fileInputRef={fileInputRef}
+          onCancelEdit={cancelEdit}
+          onCancelReply={cancelReply}
+          onRemoveAttachment={() => {
+            setAttachment(null)
+            if (fileInputRef.current) fileInputRef.current.value = ""
+          }}
+          onFileSelect={handleFileSelect}
+          onTyping={handleTyping}
+          onSubmit={() => void handleSubmit()}
+        />
       </SidebarInset>
       </SidebarProvider>
       {reactionPickerPortal}

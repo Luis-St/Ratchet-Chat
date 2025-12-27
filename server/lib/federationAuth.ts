@@ -7,6 +7,7 @@ import { isIP } from "net";
 import path from "path";
 
 import { getInstanceHost, isValidHost } from "./handles";
+import { serverLogger } from "./logger";
 
 type FederationTlsConfig = {
   ca: Buffer;
@@ -327,6 +328,11 @@ export const isFederationHostAllowed = async (
   const normalized = normalizeHost(host);
   const hostname = normalized.split(":")[0];
   if (!hostname) {
+    serverLogger.warn("federation.host.rejected", {
+      reason: "missing_hostname",
+      host,
+      normalized,
+    });
     return false;
   }
   if (
@@ -334,6 +340,13 @@ export const isFederationHostAllowed = async (
     !FEDERATION_ALLOWED_HOSTS.has(normalized) &&
     !FEDERATION_ALLOWED_HOSTS.has(hostname)
   ) {
+    serverLogger.warn("federation.host.rejected", {
+      reason: "not_in_allowlist",
+      host,
+      normalized,
+      hostname,
+      allowed_hosts: Array.from(FEDERATION_ALLOWED_HOSTS),
+    });
     return false;
   }
 
@@ -342,11 +355,27 @@ export const isFederationHostAllowed = async (
     env !== "production" || FEDERATION_ALLOW_PRIVATE_IPS;
 
   if (isBlockedHostname(hostname)) {
+    if (!allowPrivate) {
+      serverLogger.warn("federation.host.rejected", {
+        reason: "blocked_hostname",
+        host,
+        normalized,
+        hostname,
+        allow_private: allowPrivate,
+      });
+    }
     return allowPrivate;
   }
 
   if (isIP(hostname) !== 0) {
     if (!allowPrivate && isPrivateIpv4(hostname)) {
+      serverLogger.warn("federation.host.rejected", {
+        reason: "private_ipv4",
+        host,
+        normalized,
+        hostname,
+        allow_private: allowPrivate,
+      });
       return false;
     }
     return true;
@@ -355,14 +384,35 @@ export const isFederationHostAllowed = async (
   try {
     const addresses = await dns.lookup(hostname, { all: true });
     if (addresses.length === 0) {
+      serverLogger.warn("federation.host.rejected", {
+        reason: "dns_empty",
+        host,
+        normalized,
+        hostname,
+      });
       return false;
     }
     for (const address of addresses) {
       if (!validateIp(address.address, allowPrivate)) {
+        serverLogger.warn("federation.host.rejected", {
+          reason: "ip_not_allowed",
+          host,
+          normalized,
+          hostname,
+          address: address.address,
+          allow_private: allowPrivate,
+        });
         return false;
       }
     }
-  } catch {
+  } catch (error) {
+    serverLogger.warn("federation.host.rejected", {
+      reason: "dns_lookup_failed",
+      host,
+      normalized,
+      hostname,
+      error: error instanceof Error ? error.message : String(error),
+    });
     return false;
   }
 

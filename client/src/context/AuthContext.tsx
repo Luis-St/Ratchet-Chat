@@ -189,6 +189,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       window.sessionStorage.clear()
     }
 
+    // Clear master key from IndexedDB before full delete
+    try {
+      await db.syncState.delete("masterKey")
+    } catch {
+      // Best-effort
+    }
+
     void db.delete().then(() => db.open()).catch(() => {})
   }, [token])
 
@@ -208,7 +215,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           return
         }
 
-        const masterKeyJson = window.sessionStorage.getItem("ratchet-chat:master-key")
+        // Load master key from IndexedDB (persistent sessions)
+        const masterKeyRecord = await db.syncState.get("masterKey")
+        const masterKeyJson = masterKeyRecord?.value as string | undefined
         if (!masterKeyJson) {
           // Session exists but master key is missing - clear and go to guest
           await clearStaleData()
@@ -346,7 +355,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       token: loginResponse.token
     })
     
-    window.sessionStorage.setItem("ratchet-chat:master-key", await exportMasterKey(masterKey))
+    // Store master key in IndexedDB for persistent sessions
+    await db.syncState.put({ key: "masterKey", value: await exportMasterKey(masterKey) })
 
     setStatus("authenticated")
     setToken(loginResponse.token)
@@ -453,7 +463,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       token: loginResponse.token
     })
     
-    window.sessionStorage.setItem("ratchet-chat:master-key", await exportMasterKey(masterKey))
+    // Store master key in IndexedDB for persistent sessions
+    await db.syncState.put({ key: "masterKey", value: await exportMasterKey(masterKey) })
 
     setStatus("authenticated")
     setToken(loginResponse.token)

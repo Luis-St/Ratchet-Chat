@@ -91,6 +91,13 @@ export class RatchetDB extends Dexie {
             delete (message as { readReceiptSent?: unknown }).readReceiptSent
           })
       )
+    // Add compound index for efficient conversation queries
+    this.version(8).stores({
+      messages: "&id, ownerId, senderId, createdAt, isRead, vaultSynced, [ownerId+senderId]",
+      contacts: "&id, ownerId, createdAt",
+      auth: "&username",
+      syncState: "&key",
+    })
   }
 }
 
