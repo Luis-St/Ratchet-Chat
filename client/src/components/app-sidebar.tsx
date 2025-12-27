@@ -24,6 +24,7 @@ import {
 import { cn } from "@/lib/utils"
 import { NavUser } from "@/components/nav-user"
 import { getInstanceHost } from "@/lib/handles"
+import { AppInfoDialog } from "@/components/AppInfoDialog"
 
 export type ConversationPreview = {
   id: string
@@ -72,15 +73,21 @@ export function AppSidebar({
     <Sidebar collapsible="offcanvas" className="border-r bg-sidebar" {...props}>
       <SidebarHeader className="gap-3 border-b px-4 py-3">
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-600 text-white shadow-sm">
-              <ShieldCheck className="h-5 w-5" />
-            </div>
-            <div className="leading-tight group-data-[collapsible=icon]:hidden">
-              <p className="text-sm font-semibold">Ratchet-Chat</p>
-              <p className="text-xs text-muted-foreground">E2EE Secure</p>
-            </div>
-          </div>
+          <AppInfoDialog>
+            <button
+              type="button"
+              className="flex items-center gap-3 rounded-md px-1 py-1 text-left transition hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+              aria-label="Open app info"
+            >
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-600 text-white shadow-sm">
+                <ShieldCheck className="h-5 w-5" />
+              </div>
+              <div className="leading-tight group-data-[collapsible=icon]:hidden">
+                <p className="text-sm font-semibold">Ratchet-Chat</p>
+                <p className="text-xs text-muted-foreground">E2EE Secure</p>
+              </div>
+            </button>
+          </AppInfoDialog>
         </div>
         <div className="relative group-data-[collapsible=icon]:hidden">
           <Search className="text-muted-foreground absolute left-3 top-2.5 h-4 w-4" />

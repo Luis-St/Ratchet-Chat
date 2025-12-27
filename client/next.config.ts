@@ -82,11 +82,32 @@ const autoCommit =
   getGitCommit(path.resolve(__dirname, "..")) ??
   "unknown";
 
+function getAppVersion(): string {
+  try {
+    const pkgPath = path.join(__dirname, "package.json");
+    if (!fs.existsSync(pkgPath)) {
+      return "unknown";
+    }
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8")) as {
+      version?: string;
+    };
+    if (typeof pkg.version === "string" && pkg.version.trim()) {
+      return pkg.version.trim();
+    }
+    return "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+const appVersion = process.env.NEXT_PUBLIC_APP_VERSION ?? getAppVersion();
+
 const nextConfig: NextConfig = {
   /* config options here */
   reactCompiler: true,
   env: {
     NEXT_PUBLIC_CLIENT_COMMIT: autoCommit,
+    NEXT_PUBLIC_APP_VERSION: appVersion,
   },
 };
 

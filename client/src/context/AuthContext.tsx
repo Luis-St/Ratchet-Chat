@@ -84,6 +84,7 @@ type AuthContextValue = {
   invalidateAllOtherSessions: () => Promise<number>
   rotateTransportKey: () => Promise<void>
   applyTransportKeyRotation: (payload: TransportKeyRotationPayload) => Promise<void>
+  getTransportKeyRotatedAt: () => Promise<number | null>
 }
 
 const ACTIVE_SESSION_KEY = "active_session"
@@ -798,6 +799,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     [masterKey, stashPreviousTransportKey]
   )
 
+  const loadTransportKeyRotatedAt = React.useCallback(async () => {
+    return getTransportKeyRotatedAt()
+  }, [])
+
   const fetchSessions = React.useCallback(async (): Promise<SessionInfo[]> => {
     return apiFetch<SessionInfo[]>("/auth/sessions")
   }, [])
@@ -833,6 +838,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       invalidateAllOtherSessions,
       rotateTransportKey,
       applyTransportKeyRotation,
+      getTransportKeyRotatedAt: loadTransportKeyRotatedAt,
     }),
     [
       status,
@@ -851,6 +857,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       invalidateAllOtherSessions,
       rotateTransportKey,
       applyTransportKeyRotation,
+      loadTransportKeyRotatedAt,
     ]
   )
 
