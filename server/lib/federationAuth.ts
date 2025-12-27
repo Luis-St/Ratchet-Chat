@@ -420,19 +420,17 @@ export const isFederationHostAllowed = async (
 };
 
 const validateIp = (ip: string, allowPrivate: boolean) => {
-  if (isIP(ip) === 0) {
+  const ipVersion = isIP(ip);
+  if (ipVersion === 0) {
     return false;
   }
   if (allowPrivate) {
     return true;
   }
-  if (isPrivateIpv4(ip)) {
-    return false;
+  if (ipVersion === 4) {
+    return !isPrivateIpv4(ip);
   }
-  if (isPrivateIpv6(ip)) {
-    return false;
-  }
-  return true;
+  return !isPrivateIpv6(ip);
 };
 
 export const resolveFederationProtocol = (
