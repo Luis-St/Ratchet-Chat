@@ -36,6 +36,8 @@ type ComposeAreaProps = {
   onFileSelect: (e: React.ChangeEvent<HTMLInputElement>) => void
   onTyping: () => void
   onSubmit: () => void
+  onPaste: (event: React.ClipboardEvent<HTMLTextAreaElement>) => void
+  onUnselectChat: () => void
 }
 
 export function ComposeArea({
@@ -55,6 +57,8 @@ export function ComposeArea({
   onFileSelect,
   onTyping,
   onSubmit,
+  onPaste,
+  onUnselectChat,
 }: ComposeAreaProps) {
   const replySenderLabel = replyToMessage
     ? replyToMessage.direction === "out"
@@ -170,7 +174,25 @@ export function ComposeArea({
               onComposeTextChange(event.target.value)
               onTyping()
             }}
+            onPaste={onPaste}
             onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                if (attachment) {
+                  event.preventDefault()
+                  onRemoveAttachment()
+                  return
+                }
+                if (replyToMessage) {
+                  event.preventDefault()
+                  onCancelReply()
+                  return
+                }
+                if (!editingMessage && !composeText.trim()) {
+                  event.preventDefault()
+                  onUnselectChat()
+                }
+                return
+              }
               if (event.key === "Enter" && !event.shiftKey) {
                 event.preventDefault()
                 onSubmit()

@@ -92,6 +92,7 @@ const TRANSPORT_KEY_ROTATED_AT_KEY = "transportKeyRotatedAt"
 const TRANSPORT_KEY_ROTATION_MS = 30 * 24 * 60 * 60 * 1000
 const PREVIOUS_TRANSPORT_KEY_KEY = "previousTransportKey"
 const TRANSPORT_KEY_GRACE_MS = 72 * 60 * 60 * 1000
+const LAST_SELECTED_CHAT_KEY = "lastSelectedChat"
 
 const AuthContext = React.createContext<AuthContextValue | undefined>(undefined)
 
@@ -278,6 +279,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // Clear master key from IndexedDB before full delete
     try {
       await db.syncState.delete("masterKey")
+      await db.syncState.delete(LAST_SELECTED_CHAT_KEY)
     } catch {
       // Best-effort
     }

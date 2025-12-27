@@ -3,6 +3,7 @@
 import * as React from "react"
 import { createPortal } from "react-dom"
 import EmojiPicker, { Theme } from "emoji-picker-react"
+import { ShieldCheck } from "lucide-react"
 import { useTheme } from "next-themes"
 
 import { AppSidebar, type ConversationPreview } from "@/components/app-sidebar"
@@ -54,6 +55,7 @@ import {
 } from "@/lib/messageUtils"
 
 export function DashboardLayout() {
+  const LAST_SELECTED_CHAT_KEY = "lastSelectedChat"
   const {
     user,
     masterKey,
@@ -92,6 +94,11 @@ export function DashboardLayout() {
   const [pendingLink, setPendingLink] = React.useState<string | null>(null)
   const [activeActionMessageId, setActiveActionMessageId] = React.useState<string | null>(null)
   const [isTouchActions, setIsTouchActions] = React.useState(false)
+  const [isDragOver, setIsDragOver] = React.useState(false)
+  const [storedActiveId, setStoredActiveId] = React.useState<string | null>(null)
+  const [hasLoadedStoredActiveId, setHasLoadedStoredActiveId] = React.useState(false)
+  const [contactsLoaded, setContactsLoaded] = React.useState(false)
+  const [suppressStoredSelection, setSuppressStoredSelection] = React.useState(false)
   const scrollRef = React.useRef<HTMLDivElement>(null)
   const typingTimeoutRef = React.useRef<NodeJS.Timeout | null>(null)
   const fileInputRef = React.useRef<HTMLInputElement>(null)
@@ -635,13 +642,26 @@ export function DashboardLayout() {
   }, [visibleMessages, activeId, chatSearchQuery]) // Removed scrollToMessageId from dependencies to avoid re-triggering on clear
 
   React.useEffect(() => {
-    if (!user?.handle || !masterKey) {
+    if (!user?.handle) {
+      console.log("[chat-selection] user cleared; reset state")
       setContacts([])
       setActiveId("")
+      setStoredActiveId(null)
+      setHasLoadedStoredActiveId(false)
+      setContactsLoaded(false)
+      setSuppressStoredSelection(false)
+      return
+    }
+    if (!masterKey) {
+      console.log("[chat-selection] masterKey missing; waiting for contacts load")
+      setContacts([])
+      setContactsLoaded(false)
       return
     }
     const ownerId = user.id ?? user.handle
     const load = async () => {
+      setContactsLoaded(false)
+      console.log("[chat-selection] loading contacts")
       const records = await db.contacts
         .where("ownerId")
         .equals(ownerId)
@@ -651,19 +671,114 @@ export function DashboardLayout() {
       )
       const nextContacts = decoded.filter(Boolean) as Contact[]
       setContacts(nextContacts)
+      setContactsLoaded(true)
+      console.log("[chat-selection] contacts loaded", nextContacts.map((c) => c.handle))
       // Don't auto-select here - let the conversations effect handle it
       // so we always select the most recent conversation
     }
     void load()
   }, [user?.handle, user?.id, masterKey])
 
-  // Always select the topmost (most recent) conversation on login/refresh
   React.useEffect(() => {
-    if (!activeId && conversations.length > 0) {
-      // conversations is already sorted by last activity (most recent first)
-      setActiveId(conversations[0].id)
+    if (!user?.handle) {
+      return
     }
-  }, [activeId, conversations])
+    let cancelled = false
+    const ownerId = user.id ?? user.handle
+    const loadStored = async () => {
+      console.log("[chat-selection] loading stored selection")
+      const record = await db.syncState.get(LAST_SELECTED_CHAT_KEY)
+      if (cancelled) return
+      const value = record?.value
+      let nextStored: string | null = null
+      if (typeof value === "string") {
+        nextStored = value
+      } else if (value && typeof value === "object") {
+        const payload = value as { ownerId?: string; handle?: string }
+        if (!payload.ownerId || payload.ownerId === ownerId) {
+          nextStored = typeof payload.handle === "string" ? payload.handle : null
+        }
+      }
+      if (!nextStored && typeof window !== "undefined") {
+        const raw = window.localStorage.getItem(LAST_SELECTED_CHAT_KEY)
+        nextStored = raw?.trim() ? raw : null
+      }
+      console.log("[chat-selection] stored selection resolved", {
+        stored: nextStored,
+        raw: value,
+      })
+      setStoredActiveId(nextStored)
+      setHasLoadedStoredActiveId(true)
+    }
+    void loadStored()
+    return () => {
+      cancelled = true
+    }
+  }, [user?.handle, user?.id])
+
+  // Restore last selected chat, fallback to most recent when missing.
+  React.useEffect(() => {
+    if (!hasLoadedStoredActiveId || !contactsLoaded) {
+      return
+    }
+    if (activeId) {
+      if (
+        conversations.length > 0 &&
+        !conversations.some((c) => c.id === activeId)
+      ) {
+        console.log("[chat-selection] activeId missing; clearing", {
+          activeId,
+          conversations: conversations.map((c) => c.id),
+        })
+        setActiveId("")
+      }
+      return
+    }
+    if (storedActiveId && conversations.some((c) => c.id === storedActiveId)) {
+      console.log("[chat-selection] selecting storedActiveId", storedActiveId)
+      if (!suppressStoredSelection) {
+        setActiveId(storedActiveId)
+      }
+    } else {
+      console.log("[chat-selection] no stored selection match; leaving empty")
+    }
+  }, [
+    activeId,
+    conversations,
+    storedActiveId,
+    hasLoadedStoredActiveId,
+    contactsLoaded,
+    suppressStoredSelection,
+  ])
+
+  React.useEffect(() => {
+    if (!hasLoadedStoredActiveId || !contactsLoaded || !user?.handle || !activeId) {
+      return
+    }
+    if (suppressStoredSelection) {
+      return
+    }
+    console.log("[chat-selection] persist selection", activeId)
+    setStoredActiveId(activeId)
+    void db.syncState.put({
+      key: LAST_SELECTED_CHAT_KEY,
+      value: activeId,
+    })
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(LAST_SELECTED_CHAT_KEY, activeId)
+    }
+  }, [
+    activeId,
+    hasLoadedStoredActiveId,
+    contactsLoaded,
+    user?.handle,
+    user?.id,
+    suppressStoredSelection,
+  ])
+
+  React.useEffect(() => {
+    console.log("[chat-selection] activeId changed", activeId)
+  }, [activeId])
 
   React.useEffect(() => {
     if (!editingMessage) {
@@ -1096,28 +1211,135 @@ export function DashboardLayout() {
     [masterKey, user]
   )
 
+  const handleAttachFile = React.useCallback(
+    async (file: File) => {
+      if (!activeContact) {
+        setSendError("Select a chat before attaching files.")
+        return
+      }
+      if (editingMessage) {
+        setSendError("Finish editing before attaching files.")
+        return
+      }
+      if (isBusy) {
+        return
+      }
+      if (file.size > 10 * 1024 * 1024) {
+        setSendError("File too large (max 10MB)")
+        return
+      }
+      const reader = new FileReader()
+      reader.onload = () => {
+        const dataUrl = reader.result as string
+        const base64 = dataUrl.split(",")[1]
+        if (!base64) {
+          setSendError("Unable to read file.")
+          return
+        }
+        setAttachment({
+          name: file.name,
+          type: file.type,
+          size: file.size,
+          data: base64,
+        })
+        setSendError(null)
+        if (fileInputRef.current) fileInputRef.current.value = ""
+      }
+      reader.onerror = () => {
+        setSendError("Unable to read file.")
+      }
+      reader.readAsDataURL(file)
+    },
+    [activeContact, editingMessage, isBusy]
+  )
+
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
-    if (file.size > 10 * 1024 * 1024) {
-      setSendError("File too large (max 10MB)")
-      return
-    }
-    const reader = new FileReader()
-    reader.onload = () => {
-      const dataUrl = reader.result as string
-      // Extract base64 data (remove "data:mime/type;base64,")
-      const base64 = dataUrl.split(",")[1]
-      setAttachment({
-        name: file.name,
-        type: file.type,
-        size: file.size,
-        data: base64
-      })
-      setSendError(null)
-    }
-    reader.readAsDataURL(file)
+    void handleAttachFile(file)
   }
+
+  const handlePasteAttachment = React.useCallback(
+    (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+      const clipboard = event.clipboardData
+      if (!clipboard) return
+      const directFile = clipboard.files?.[0]
+      const itemFile =
+        directFile ??
+        Array.from(clipboard.items ?? [])
+          .find((item) => item.kind === "file")
+          ?.getAsFile() ??
+        null
+      if (!itemFile) {
+        return
+      }
+      event.preventDefault()
+      void handleAttachFile(itemFile)
+    },
+    [handleAttachFile]
+  )
+
+  const hasFileTransfer = (types: readonly string[] | undefined) =>
+    Array.from(types ?? []).includes("Files")
+
+  const canAttachFiles = Boolean(activeContact) && !editingMessage && !isBusy
+
+  const handleDragEnter = React.useCallback(
+    (event: React.DragEvent<HTMLDivElement>) => {
+      if (!hasFileTransfer(event.dataTransfer?.types)) {
+        return
+      }
+      event.preventDefault()
+      if (canAttachFiles) {
+        setIsDragOver(true)
+      }
+    },
+    [canAttachFiles]
+  )
+
+  const handleDragOver = React.useCallback(
+    (event: React.DragEvent<HTMLDivElement>) => {
+      if (!hasFileTransfer(event.dataTransfer?.types)) {
+        return
+      }
+      event.preventDefault()
+      event.dataTransfer.dropEffect = "copy"
+      if (canAttachFiles) {
+        setIsDragOver(true)
+      }
+    },
+    [canAttachFiles]
+  )
+
+  const handleDragLeave = React.useCallback(
+    (event: React.DragEvent<HTMLDivElement>) => {
+      if (!isDragOver) {
+        return
+      }
+      const relatedTarget = event.relatedTarget as Node | null
+      if (relatedTarget && event.currentTarget.contains(relatedTarget)) {
+        return
+      }
+      setIsDragOver(false)
+    },
+    [isDragOver]
+  )
+
+  const handleDropAttachment = React.useCallback(
+    (event: React.DragEvent<HTMLDivElement>) => {
+      if (!hasFileTransfer(event.dataTransfer?.types)) {
+        return
+      }
+      event.preventDefault()
+      setIsDragOver(false)
+      const file = event.dataTransfer?.files?.[0]
+      if (!file) {
+        return
+      }
+      void handleAttachFile(file)
+    },
+    [handleAttachFile]
+  )
 
   const beginReply = React.useCallback(
     (message: StoredMessage) => {
@@ -1855,90 +2077,140 @@ export function DashboardLayout() {
           onDeleteChat={handleDeleteChat}
         />
 
-        <div className="relative flex flex-1 flex-col overflow-hidden isolate">
+        <div
+          className="relative flex flex-1 flex-col overflow-hidden isolate"
+          onDragEnter={handleDragEnter}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDropAttachment}
+        >
           <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,_var(--chat-glow),_transparent_55%)] -z-10" />
           <div className="pointer-events-none absolute inset-0 opacity-40 bg-[linear-gradient(90deg,var(--chat-grid)_1px,transparent_1px),linear-gradient(0deg,var(--chat-grid)_1px,transparent_1px)] bg-[size:32px_32px] -z-10" />
+          {isDragOver ? (
+            <div className="pointer-events-none absolute inset-4 z-20 flex items-center justify-center rounded-2xl border-2 border-dashed border-emerald-300 bg-emerald-50/80 text-sm font-medium text-emerald-700 shadow-lg dark:border-emerald-400/50 dark:bg-emerald-900/40 dark:text-emerald-100">
+              Drop file to attach
+            </div>
+          ) : null}
           <ScrollArea className="h-full relative z-10">
             <div className="mx-auto flex w-full max-w-none flex-col gap-2 px-4 py-4">
               {!activeContact ? (
-                <div className="mx-auto rounded-full bg-card/80 px-4 py-2 text-xs text-muted-foreground shadow-sm">
-                  Add a handle to begin a secure chat.
-                </div>
-              ) : (
-                <div className="mx-auto rounded-full bg-card/80 px-4 py-2 text-xs text-muted-foreground shadow-sm">
-                  Messages are sealed locally. The server only stores ciphertext.
-                </div>
-              )}
-              {loadingConversation === activeContact?.handle && (
-                <div className="flex justify-center py-4">
-                  <div className="flex items-center gap-2 text-muted-foreground">
-                    <div className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
-                    <span className="text-sm">Loading messages...</span>
+                <div className="flex min-h-[60vh] items-center justify-center px-4 py-8">
+                  <div className="w-full max-w-md rounded-2xl border bg-card/80 p-6 text-center shadow-sm">
+                    <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-emerald-600 text-white shadow-sm">
+                      <ShieldCheck className="h-6 w-6" />
+                    </div>
+                    <h2 className="text-lg font-semibold">Ratchet Chat</h2>
+                    <p className="mt-2 text-sm text-muted-foreground">
+                      End-to-end encrypted messaging built for private conversations.
+                    </p>
+                    <div className="mt-4 space-y-2 text-left text-xs text-muted-foreground">
+                      <div className="flex items-start gap-2">
+                        <span className="mt-1 h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                        <span>Keys stay on your devices, never the server.</span>
+                      </div>
+                      <div className="flex items-start gap-2">
+                        <span className="mt-1 h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                        <span>Server stores ciphertext only, not readable content.</span>
+                      </div>
+                      <div className="flex items-start gap-2">
+                        <span className="mt-1 h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                        <span>Select a chat on the left to begin.</span>
+                      </div>
+                    </div>
                   </div>
                 </div>
+              ) : (
+                <>
+                  <div className="mx-auto rounded-full bg-card/80 px-4 py-2 text-xs text-muted-foreground shadow-sm">
+                    Messages are sealed locally. The server only stores ciphertext.
+                  </div>
+                  {loadingConversation === activeContact?.handle && (
+                    <div className="flex justify-center py-4">
+                      <div className="flex items-center gap-2 text-muted-foreground">
+                        <div className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                        <span className="text-sm">Loading messages...</span>
+                      </div>
+                    </div>
+                  )}
+                  {activeMessages.map((message) => {
+                    const isPickerOpen = reactionPickerId === message.id
+                    const showActions = isTouchActions
+                      ? activeActionMessageId === message.id
+                      : isPickerOpen
+                    return (
+                      <MessageBubble
+                        key={message.id}
+                        message={message}
+                        activeMessageLookup={activeMessageLookup}
+                        isPickerOpen={isPickerOpen}
+                        showActions={showActions}
+                        isTouchActions={isTouchActions}
+                        isBusy={isBusy}
+                        editingMessage={editingMessage}
+                        highlightedMessageId={highlightedMessageId}
+                        onMessageTap={handleMessageTap}
+                        onScrollToMessage={(id) => setScrollToMessageId(id)}
+                        onPreviewImage={setPreviewImage}
+                        onPendingLink={setPendingLink}
+                        onReaction={(msg, emoji, action) =>
+                          void handleSendReaction(msg, emoji, action)
+                        }
+                        onReactionPickerOpen={(event, messageId) => {
+                          if (messageId) {
+                            reactionPickerAnchorRef.current = event.currentTarget
+                            setActiveActionMessageId(messageId)
+                            setReactionPickerId(messageId)
+                          } else {
+                            setReactionPickerId(null)
+                          }
+                        }}
+                        onReply={beginReply}
+                        onEdit={beginEdit}
+                        onDelete={(msg) => void handleDeleteMessage(msg)}
+                      />
+                    )
+                  })}
+                  <div ref={scrollRef} />
+                </>
               )}
-              {activeMessages.map((message) => {
-                const isPickerOpen = reactionPickerId === message.id
-                const showActions = isTouchActions
-                  ? activeActionMessageId === message.id
-                  : isPickerOpen
-                return (
-                  <MessageBubble
-                    key={message.id}
-                    message={message}
-                    activeMessageLookup={activeMessageLookup}
-                    isPickerOpen={isPickerOpen}
-                    showActions={showActions}
-                    isTouchActions={isTouchActions}
-                    isBusy={isBusy}
-                    editingMessage={editingMessage}
-                    highlightedMessageId={highlightedMessageId}
-                    onMessageTap={handleMessageTap}
-                    onScrollToMessage={(id) => setScrollToMessageId(id)}
-                    onPreviewImage={setPreviewImage}
-                    onPendingLink={setPendingLink}
-                    onReaction={(msg, emoji, action) => void handleSendReaction(msg, emoji, action)}
-                    onReactionPickerOpen={(event, messageId) => {
-                      if (messageId) {
-                        reactionPickerAnchorRef.current = event.currentTarget
-                        setActiveActionMessageId(messageId)
-                        setReactionPickerId(messageId)
-                      } else {
-                        setReactionPickerId(null)
-                      }
-                    }}
-                    onReply={beginReply}
-                    onEdit={beginEdit}
-                    onDelete={(msg) => void handleDeleteMessage(msg)}
-                  />
-                )
-              })}
-              <div ref={scrollRef} />
             </div>
           </ScrollArea>
         </div>
 
-        <ComposeArea
-          activeContact={activeContact}
-          composeText={composeText}
-          onComposeTextChange={setComposeText}
-          editingMessage={editingMessage}
-          replyToMessage={replyToMessage}
-          attachment={attachment}
-          isBusy={isBusy}
-          sendError={sendError}
-          textareaRef={textareaRef}
-          fileInputRef={fileInputRef}
-          onCancelEdit={cancelEdit}
-          onCancelReply={cancelReply}
-          onRemoveAttachment={() => {
-            setAttachment(null)
-            if (fileInputRef.current) fileInputRef.current.value = ""
-          }}
-          onFileSelect={handleFileSelect}
-          onTyping={handleTyping}
-          onSubmit={() => void handleSubmit()}
-        />
+        {activeContact ? (
+          <ComposeArea
+            activeContact={activeContact}
+            composeText={composeText}
+            onComposeTextChange={setComposeText}
+            editingMessage={editingMessage}
+            replyToMessage={replyToMessage}
+            attachment={attachment}
+            isBusy={isBusy}
+            sendError={sendError}
+            textareaRef={textareaRef}
+            fileInputRef={fileInputRef}
+            onCancelEdit={cancelEdit}
+            onCancelReply={cancelReply}
+            onRemoveAttachment={() => {
+              setAttachment(null)
+              if (fileInputRef.current) fileInputRef.current.value = ""
+            }}
+            onFileSelect={handleFileSelect}
+            onTyping={handleTyping}
+            onSubmit={() => void handleSubmit()}
+            onPaste={handlePasteAttachment}
+            onUnselectChat={() => {
+              console.log("[chat-selection] unselect chat via ESC")
+              setSuppressStoredSelection(true)
+              setStoredActiveId(null)
+              setActiveId("")
+              void db.syncState.delete(LAST_SELECTED_CHAT_KEY)
+              if (typeof window !== "undefined") {
+                window.localStorage.removeItem(LAST_SELECTED_CHAT_KEY)
+              }
+            }}
+          />
+        ) : null}
       </SidebarInset>
       </SidebarProvider>
       {reactionPickerPortal}
