@@ -12,7 +12,7 @@ The audio/video calling feature in Ratchet Chat implements strong end-to-end enc
 -   **Mechanism:** Signaling messages (SDP offers/answers, ICE candidates) are encrypted on the client side before transmission.
 -   **Cryptography:** Uses a hybrid scheme:
     -   **AES-GCM (256-bit)** for payload encryption.
-    -   **RSA-OAEP (2048-bit)** for key exchange.
+    -   **ML-KEM-768** for key exchange.
 -   **Impact:** The server acts as a blind relay. It knows *who* is calling *whom* and *when*, but cannot see the technical details of the connection or inject malicious ICE candidates to redirect media traffic without detection (assuming key integrity).
 
 ### 2. Transport Security (Strength: Standard)

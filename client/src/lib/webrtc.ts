@@ -32,13 +32,12 @@ export async function encryptSignaling(
 
 export async function decryptSignaling(
   encryptedBlob: string,
-  transportPrivateKey: CryptoKey
+  transportPrivateKey: Uint8Array
 ): Promise<SignalingPayload> {
   console.log("[WebRTC] Decrypting signaling", {
     blobLength: encryptedBlob?.length,
     hasPrivateKey: !!transportPrivateKey,
-    keyType: transportPrivateKey?.type,
-    keyAlgorithm: (transportPrivateKey?.algorithm as RsaHashedKeyAlgorithm)?.name
+    keyLength: transportPrivateKey?.length
   })
   try {
     const decrypted = await decryptTransitBlob(encryptedBlob, transportPrivateKey)

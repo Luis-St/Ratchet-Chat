@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import { ml_dsa65 } from "@noble/post-quantum/ml-dsa.js";
 import dns from "dns/promises";
 import fs from "fs";
 import http from "http";
@@ -23,8 +24,8 @@ type FederationRequestResult = {
 };
 
 type FederationKeyPair = {
-  privateKey: crypto.KeyObject;
-  publicKey: crypto.KeyObject;
+  privateKey: Uint8Array;
+  publicKey: Uint8Array;
   publicKeyBase64: string;
   keyId: string;
   createdAt: string;
@@ -33,7 +34,7 @@ type FederationKeyPair = {
 export type FederationKeyEntry = {
   host: string;
   publicKey: string;
-  key: crypto.KeyObject;
+  publicKeyBytes: Uint8Array;
   expiresAt: number;
 };
 
@@ -203,16 +204,8 @@ const createFederationKeyPair = (): FederationKeyPair => {
   const createdAt = certFileKeys?.createdAt ?? process.env.SERVER_KEY_CREATED_AT;
 
   if (privateKeyBase64 && publicKeyBase64) {
-    const privateKey = crypto.createPrivateKey({
-      key: Buffer.from(privateKeyBase64, "base64"),
-      format: "der",
-      type: "pkcs8",
-    });
-    const publicKey = crypto.createPublicKey({
-      key: Buffer.from(publicKeyBase64, "base64"),
-      format: "der",
-      type: "spki",
-    });
+    const privateKey = new Uint8Array(Buffer.from(privateKeyBase64, "base64"));
+    const publicKey = new Uint8Array(Buffer.from(publicKeyBase64, "base64"));
     const createdAtValue = createdAt ?? new Date().toISOString();
     if (
       !certFileKeys?.privateKeyBase64 ||
@@ -231,18 +224,18 @@ const createFederationKeyPair = (): FederationKeyPair => {
     };
   }
 
-  const { publicKey, privateKey } = crypto.generateKeyPairSync("ed25519");
-  const publicKeyDer = publicKey.export({ type: "spki", format: "der" });
-  const publicKeyBase64Generated = Buffer.from(publicKeyDer).toString("base64");
+  const { publicKey, secretKey } = ml_dsa65.keygen();
+  const publicKeyBase64Generated = Buffer.from(publicKey).toString("base64");
+  const privateKeyBase64Generated = Buffer.from(secretKey).toString("base64");
   const createdAtValue = new Date().toISOString();
   writeKeysToCertFile(
-    privateKey.export({ type: "pkcs8", format: "der" }).toString("base64"),
+    privateKeyBase64Generated,
     publicKeyBase64Generated,
     createdAtValue
   );
   const keyId = computeKeyId(publicKeyBase64Generated);
   return {
-    privateKey,
+    privateKey: secretKey,
     publicKey,
     publicKeyBase64: publicKeyBase64Generated,
     keyId,
@@ -513,21 +506,20 @@ export const getFederationDiscoveryDocument = (): FederationDiscoveryDocument =>
 
 export const signFederationPayload = (payload: string): string => {
   const { privateKey } = getFederationKeyPair();
-  const signature = crypto.sign(null, Buffer.from(payload, "utf8"), privateKey);
-  return signature.toString("base64");
+  const signature = ml_dsa65.sign(Buffer.from(payload, "utf8"), privateKey);
+  return Buffer.from(signature).toString("base64");
 };
 
 export const verifyFederationPayload = (
   payload: string,
   signature: string,
-  publicKey: crypto.KeyObject
+  publicKey: Uint8Array
 ): boolean => {
   try {
-    return crypto.verify(
-      null,
+    return ml_dsa65.verify(
+      Buffer.from(signature, "base64"),
       Buffer.from(payload, "utf8"),
-      publicKey,
-      Buffer.from(signature, "base64")
+      publicKey
     );
   } catch {
     return false;
@@ -638,12 +630,8 @@ export const federationRequestJson = async (
   });
 };
 
-const createPublicKeyFromBase64 = (publicKey: string) =>
-  crypto.createPublicKey({
-    key: Buffer.from(publicKey, "base64"),
-    format: "der",
-    type: "spki",
-  });
+const decodePublicKey = (publicKey: string) =>
+  new Uint8Array(Buffer.from(publicKey, "base64"));
 
 const selectActiveKey = (
   keys: FederationDiscoveryKey[]
@@ -697,7 +685,7 @@ const verifyDiscoverySignature = (
   return verifyFederationPayload(
     stableStringify(unsigned),
     doc.signature,
-    createPublicKeyFromBase64(publicKeyBase64)
+    decodePublicKey(publicKeyBase64)
   );
 };
 
@@ -863,7 +851,7 @@ export const fetchFederationKey = async (
       const entry: FederationKeyEntry = {
         host: normalizedHost,
         publicKey: activeKey.public_key,
-        key: createPublicKeyFromBase64(activeKey.public_key),
+        publicKeyBytes: decodePublicKey(activeKey.public_key),
         expiresAt: Date.now() + FEDERATION_KEY_TTL_MS,
       };
       federationKeyCache.set(normalizedHost, entry);
@@ -908,7 +896,7 @@ export const fetchFederationKey = async (
   const entry: FederationKeyEntry = {
     host: normalizedHost,
     publicKey: data.publicKey,
-    key: createPublicKeyFromBase64(data.publicKey),
+    publicKeyBytes: decodePublicKey(data.publicKey),
     expiresAt: Date.now() + FEDERATION_KEY_TTL_MS,
   };
   federationKeyCache.set(normalizedHost, entry);

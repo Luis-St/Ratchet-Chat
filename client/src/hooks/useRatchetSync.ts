@@ -15,7 +15,6 @@ import {
   encodeUtf8,
   encryptTransitEnvelope,
   encryptString,
-  getIdentityPublicKey,
   signMessage,
   verifySignature,
 } from "@/lib/crypto"
@@ -174,8 +173,8 @@ export function useRatchetSync(options: UseRatchetSyncOptions = {}) {
   const {
     masterKey,
     transportPrivateKey,
-    previousTransportPrivateKey,
     identityPrivateKey,
+    publicIdentityKey,
     user,
   } = useAuth()
   const { settings } = useSettings()
@@ -286,7 +285,7 @@ export function useRatchetSync(options: UseRatchetSyncOptions = {}) {
       status: ReceiptEventStatus
       timestamp: string
     }) => {
-      if (!identityPrivateKey || !user?.handle) {
+      if (!identityPrivateKey || !publicIdentityKey || !user?.handle) {
         return
       }
       const signatureBody = `receipt:${params.status}:${params.timestamp}`
@@ -305,7 +304,7 @@ export function useRatchetSync(options: UseRatchetSyncOptions = {}) {
         receipt_timestamp: params.timestamp,
         sender_handle: user.handle,
         sender_signature: signature,
-        sender_identity_key: getIdentityPublicKey(identityPrivateKey),
+        sender_identity_key: publicIdentityKey,
         message_id: params.messageId,
       })
       const encryptedBlob = await encryptTransitEnvelope(
@@ -322,7 +321,7 @@ export function useRatchetSync(options: UseRatchetSyncOptions = {}) {
         },
       })
     },
-    [identityPrivateKey, user?.handle]
+    [identityPrivateKey, publicIdentityKey, user?.handle]
   )
 
   const processSingleQueueItem = React.useCallback(
@@ -338,17 +337,7 @@ export function useRatchetSync(options: UseRatchetSyncOptions = {}) {
           transportPrivateKey
         )
       } catch (e) {
-        if (!previousTransportPrivateKey) {
-          return
-        }
-        try {
-          decryptedBytes = await decryptTransitBlob(
-            item.encrypted_blob,
-            previousTransportPrivateKey
-          )
-        } catch {
-          return
-        }
+        return
       }
 
       const payload = parseTransitPayload(decryptedBytes)
@@ -791,7 +780,6 @@ export function useRatchetSync(options: UseRatchetSyncOptions = {}) {
     [
       masterKey,
       transportPrivateKey,
-      previousTransportPrivateKey,
       user?.id,
       user?.handle,
       sendReceiptEvent,

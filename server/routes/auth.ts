@@ -7,11 +7,20 @@ import { z } from "zod";
 
 import { getJwtSecret, hashToken, createAuthenticateToken } from "../middleware/auth";
 import { createRateLimiter } from "../middleware/rateLimit";
-import { computeServerSession, generateServerEphemeral, srp } from "../lib/srp";
+import {
+  loginFinish,
+  loginResponse,
+  registerFinish,
+  registerResponse,
+  type ServerLoginState,
+  type ServerRegistrationState,
+} from "../lib/opaque";
 
 const KDF_ITERATIONS_MIN = Number(process.env.KDF_ITERATIONS_MIN ?? 300000);
 const KDF_ITERATIONS_MAX = Number(process.env.KDF_ITERATIONS_MAX ?? 1000000);
-const SRP_SESSION_TTL_MS = Number(process.env.SRP_SESSION_TTL_MS ?? 5 * 60 * 1000);
+const OPAQUE_SESSION_TTL_MS = Number(
+  process.env.OPAQUE_SESSION_TTL_MS ?? 5 * 60 * 1000
+);
 const LOGIN_BACKOFF_BASE_MS = Number(
   process.env.LOGIN_BACKOFF_BASE_MS ?? 1000
 );
@@ -30,8 +39,14 @@ const rotateTransportKeySchema = z.object({
   encrypted_transport_iv: z.string().min(1),
 });
 
-const registerSchema = z.object({
+const opaqueRegisterStartSchema = z.object({
   username: z.string().min(3).max(64),
+  request: z.string().min(1),
+});
+
+const opaqueRegisterFinishSchema = z.object({
+  username: z.string().min(3).max(64),
+  finish: z.string().min(1),
   kdf_salt: z.string().min(1),
   kdf_iterations: z
     .number()
@@ -44,27 +59,27 @@ const registerSchema = z.object({
   encrypted_identity_iv: z.string().min(1),
   encrypted_transport_key: z.string().min(1),
   encrypted_transport_iv: z.string().min(1),
-  srp_salt: z.string().min(1),
-  srp_verifier: z.string().min(1),
 });
 
-const srpStartSchema = z.object({
+const opaqueLoginStartSchema = z.object({
   username: z.string().min(3).max(64),
-  A: z.string().min(1),
+  request: z.string().min(1),
 });
 
-const srpVerifySchema = z.object({
+const opaqueLoginFinishSchema = z.object({
   username: z.string().min(3).max(64),
-  A: z.string().min(1),
-  M1: z.string().min(1),
+  finish: z.string().min(1),
 });
 
-type SrpSession = {
+type OpaqueRegistrationSession = {
   username: string;
-  A: string;
-  b: bigint;
-  BBytes: Buffer;
-  verifier: string;
+  state: ServerRegistrationState;
+  expiresAt: number;
+};
+
+type OpaqueLoginSession = {
+  username: string;
+  state: ServerLoginState;
   expiresAt: number;
 };
 
@@ -73,15 +88,21 @@ type BackoffEntry = {
   blockedUntil: number;
 };
 
-const srpSessions = new Map<string, SrpSession>();
+const opaqueRegistrationSessions = new Map<string, OpaqueRegistrationSession>();
+const opaqueLoginSessions = new Map<string, OpaqueLoginSession>();
 const loginBackoff = new Map<string, BackoffEntry>();
 
-const sessionKey = (username: string, A: string) => `${username}:${A}`;
+const sessionKey = (username: string) => username;
 
 const cleanupSessions = (now: number) => {
-  for (const [key, session] of srpSessions) {
+  for (const [key, session] of opaqueRegistrationSessions) {
     if (session.expiresAt <= now) {
-      srpSessions.delete(key);
+      opaqueRegistrationSessions.delete(key);
+    }
+  }
+  for (const [key, session] of opaqueLoginSessions) {
+    if (session.expiresAt <= now) {
+      opaqueLoginSessions.delete(key);
     }
   }
 };
@@ -249,14 +270,64 @@ export const createAuthRouter = (prisma: PrismaClient, io?: SocketIOServer) => {
     return res.json(user);
   });
 
-  router.post("/register", async (req: Request, res: Response) => {
-    const parsed = registerSchema.safeParse(req.body);
+  router.post("/register", async (_req: Request, res: Response) => {
+    return res
+      .status(410)
+      .json({ error: "Use OPAQUE registration endpoints" });
+  });
+
+  router.post("/login", async (_req: Request, res: Response) => {
+    return res.status(410).json({ error: "Use OPAQUE login endpoints" });
+  });
+
+  router.post("/opaque/register/start", async (req: Request, res: Response) => {
+    const parsed = opaqueRegisterStartSchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ error: "Invalid request" });
     }
+    const { username, request } = parsed.data;
+    if (username.includes("@")) {
+      return res.status(400).json({ error: "Username must be local" });
+    }
 
+    const existing = await prisma.user.findUnique({
+      where: { username },
+      select: { id: true },
+    });
+    if (existing) {
+      return res.status(409).json({ error: "Username already taken" });
+    }
+
+    cleanupSessions(Date.now());
+    let responseState: { response: Uint8Array; state: ServerRegistrationState };
+    try {
+      responseState = await registerResponse(
+        username,
+        Buffer.from(request, "base64")
+      );
+    } catch {
+      return res.status(400).json({ error: "Invalid OPAQUE parameters" });
+    }
+    const expiresAt = Date.now() + OPAQUE_SESSION_TTL_MS;
+    opaqueRegistrationSessions.set(sessionKey(username), {
+      username,
+      state: responseState.state,
+      expiresAt,
+    });
+
+    return res.json({
+      response: Buffer.from(responseState.response).toString("base64"),
+    });
+  });
+
+  router.post("/opaque/register/finish", async (req: Request, res: Response) => {
+    const parsed = opaqueRegisterFinishSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Invalid request" });
+    }
     const {
       username,
+      finish,
       kdf_salt,
       kdf_iterations,
       public_identity_key,
@@ -265,8 +336,6 @@ export const createAuthRouter = (prisma: PrismaClient, io?: SocketIOServer) => {
       encrypted_identity_iv,
       encrypted_transport_key,
       encrypted_transport_iv,
-      srp_salt,
-      srp_verifier,
     } = parsed.data;
     if (username.includes("@")) {
       return res.status(400).json({ error: "Username must be local" });
@@ -280,6 +349,25 @@ export const createAuthRouter = (prisma: PrismaClient, io?: SocketIOServer) => {
       return res.status(409).json({ error: "Username already taken" });
     }
 
+    const session = opaqueRegistrationSessions.get(sessionKey(username));
+    if (!session || session.expiresAt <= Date.now()) {
+      opaqueRegistrationSessions.delete(sessionKey(username));
+      return res.status(400).json({ error: "OPAQUE session expired" });
+    }
+
+    let passwordFile: Uint8Array;
+    try {
+      passwordFile = registerFinish(
+        session.state,
+        Buffer.from(finish, "base64")
+      );
+    } catch {
+      opaqueRegistrationSessions.delete(sessionKey(username));
+      return res.status(400).json({ error: "Invalid registration payload" });
+    }
+
+    opaqueRegistrationSessions.delete(sessionKey(username));
+
     const user = await prisma.user.create({
       data: {
         username,
@@ -291,8 +379,7 @@ export const createAuthRouter = (prisma: PrismaClient, io?: SocketIOServer) => {
         encrypted_identity_iv,
         encrypted_transport_key,
         encrypted_transport_iv,
-        srp_salt,
-        srp_verifier,
+        opaque_password_file: Buffer.from(passwordFile),
       },
       select: {
         id: true,
@@ -306,16 +393,12 @@ export const createAuthRouter = (prisma: PrismaClient, io?: SocketIOServer) => {
     return res.status(201).json({ user });
   });
 
-  router.post("/login", async (_req: Request, res: Response) => {
-    return res.status(410).json({ error: "Use SRP login endpoints" });
-  });
-
-  router.post("/srp/start", async (req: Request, res: Response) => {
-    const parsed = srpStartSchema.safeParse(req.body);
+  router.post("/opaque/login/start", async (req: Request, res: Response) => {
+    const parsed = opaqueLoginStartSchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ error: "Invalid request" });
     }
-    const { username, A } = parsed.data;
+    const { username, request } = parsed.data;
     if (username.includes("@")) {
       return res.status(400).json({ error: "Username must be local" });
     }
@@ -324,57 +407,51 @@ export const createAuthRouter = (prisma: PrismaClient, io?: SocketIOServer) => {
     if (blocked.blocked) {
       res.setHeader("Retry-After", blocked.retryAfter.toString());
       return res.status(429).json({ error: "Retry later" });
-    }
-
-    let AInt: bigint;
-    try {
-      AInt = srp.toBigInt(Buffer.from(A, "base64"));
-    } catch {
-      recordFailure(backoffKey);
-      return res.status(400).json({ error: "Invalid SRP parameters" });
-    }
-    if (AInt % srp.N === 0n) {
-      recordFailure(backoffKey);
-      return res.status(400).json({ error: "Invalid SRP parameters" });
     }
 
     const user = await prisma.user.findUnique({
       where: { username },
       select: {
         id: true,
-        srp_salt: true,
-        srp_verifier: true,
+        opaque_password_file: true,
       },
     });
-    if (!user?.srp_salt || !user.srp_verifier) {
+    if (!user?.opaque_password_file) {
       recordFailure(backoffKey);
       return res.status(401).json({ error: "Invalid credentials" });
     }
 
     cleanupSessions(Date.now());
-    const { b, B, BBytes } = generateServerEphemeral(user.srp_verifier);
-    const expiresAt = Date.now() + SRP_SESSION_TTL_MS;
-    srpSessions.set(sessionKey(username, A), {
+    let responseState: { response: Uint8Array; state: ServerLoginState };
+    try {
+      responseState = await loginResponse(
+        username,
+        new Uint8Array(user.opaque_password_file),
+        Buffer.from(request, "base64")
+      );
+    } catch {
+      recordFailure(backoffKey);
+      return res.status(400).json({ error: "Invalid OPAQUE parameters" });
+    }
+
+    const expiresAt = Date.now() + OPAQUE_SESSION_TTL_MS;
+    opaqueLoginSessions.set(sessionKey(username), {
       username,
-      A,
-      b,
-      BBytes,
-      verifier: user.srp_verifier,
+      state: responseState.state,
       expiresAt,
     });
 
     return res.json({
-      salt: user.srp_salt,
-      B,
+      response: Buffer.from(responseState.response).toString("base64"),
     });
   });
 
-  router.post("/srp/verify", async (req: Request, res: Response) => {
-    const parsed = srpVerifySchema.safeParse(req.body);
+  router.post("/opaque/login/finish", async (req: Request, res: Response) => {
+    const parsed = opaqueLoginFinishSchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ error: "Invalid request" });
     }
-    const { username, A, M1 } = parsed.data;
+    const { username, finish } = parsed.data;
     if (username.includes("@")) {
       return res.status(400).json({ error: "Username must be local" });
     }
@@ -385,33 +462,22 @@ export const createAuthRouter = (prisma: PrismaClient, io?: SocketIOServer) => {
       return res.status(429).json({ error: "Retry later" });
     }
 
-    const key = sessionKey(username, A);
-    const session = srpSessions.get(key);
+    const session = opaqueLoginSessions.get(sessionKey(username));
     if (!session || session.expiresAt <= Date.now()) {
       recordFailure(backoffKey);
-      srpSessions.delete(key);
-      return res.status(400).json({ error: "SRP session expired" });
+      opaqueLoginSessions.delete(sessionKey(username));
+      return res.status(400).json({ error: "OPAQUE session expired" });
     }
 
-    const serverSession = computeServerSession(
-      A,
-      session.BBytes,
-      session.b,
-      session.verifier
-    );
-    if (!serverSession) {
+    try {
+      await loginFinish(session.state, Buffer.from(finish, "base64"));
+    } catch {
       recordFailure(backoffKey);
-      srpSessions.delete(key);
+      opaqueLoginSessions.delete(sessionKey(username));
       return res.status(401).json({ error: "Invalid credentials" });
     }
 
-    if (serverSession.M1 !== M1) {
-      recordFailure(backoffKey);
-      srpSessions.delete(key);
-      return res.status(401).json({ error: "Invalid credentials" });
-    }
-
-    srpSessions.delete(key);
+    opaqueLoginSessions.delete(sessionKey(username));
     resetFailures(backoffKey);
 
     const user = await prisma.user.findUnique({ where: { username } });
@@ -424,15 +490,16 @@ export const createAuthRouter = (prisma: PrismaClient, io?: SocketIOServer) => {
       token = jwt.sign(
         { sub: user.id, username: user.username },
         getJwtSecret(),
-        { expiresIn: "30d" },
+        { expiresIn: "30d" }
       );
-    } catch (error) {
+    } catch {
       return res.status(500).json({ error: "Server misconfigured" });
     }
 
-    // Create session record
     const tokenHash = hashToken(token);
-    const expiresAt = new Date(Date.now() + SESSION_EXPIRY_DAYS * 24 * 60 * 60 * 1000);
+    const expiresAt = new Date(
+      Date.now() + SESSION_EXPIRY_DAYS * 24 * 60 * 60 * 1000
+    );
     await prisma.session.create({
       data: {
         user_id: user.id,
@@ -445,7 +512,6 @@ export const createAuthRouter = (prisma: PrismaClient, io?: SocketIOServer) => {
 
     return res.json({
       token,
-      M2: serverSession.M2,
       keys: {
         encrypted_identity_key: user.encrypted_identity_key,
         encrypted_identity_iv: user.encrypted_identity_iv,

@@ -12,8 +12,7 @@ model User {
   username                   String          @unique
   kdf_salt                   String
   kdf_iterations             Int
-  srp_salt                   String?
-  srp_verifier               String?
+  opaque_password_file       Bytes?
   public_identity_key        String
   public_transport_key       String
   encrypted_identity_key     String

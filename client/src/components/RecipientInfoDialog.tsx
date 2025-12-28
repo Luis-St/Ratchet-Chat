@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { Copy, Fingerprint, Shield, User } from "lucide-react"
+import { Copy, Eye, EyeOff, Fingerprint, Shield } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -31,7 +31,23 @@ export function RecipientInfoDialog({
   open: boolean
   onOpenChange: (open: boolean) => void
 }) {
+  const [showIdentityKey, setShowIdentityKey] = React.useState(false)
+
+  React.useEffect(() => {
+    if (!contact) {
+      return
+    }
+    setShowIdentityKey(false)
+  }, [contact?.handle, open])
+
   if (!contact) return null
+
+  const formatKeyPreview = (key: string, head = 18, tail = 14) => {
+    if (!key) return "Unavailable"
+    if (key.length <= head + tail + 3) return key
+    return `${key.slice(0, head)}...${key.slice(-tail)}`
+  }
+  const identityKeyPreview = formatKeyPreview(contact.publicIdentityKey)
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -63,23 +79,47 @@ export function RecipientInfoDialog({
                   <Fingerprint className="h-4 w-4 text-emerald-600" />
                   <span className="font-semibold text-sm">Identity Key</span>
                 </div>
-                <Badge variant="outline" className="text-[10px] font-mono">Ed25519</Badge>
+                <Badge variant="outline" className="text-[10px] font-mono">ML-DSA-65</Badge>
               </div>
               
               <div className="flex items-start gap-2">
-                <div className="flex-1 rounded-md bg-background p-3 font-mono text-xs break-all border shadow-sm min-h-[3rem] flex items-center">
-                  {contact.publicIdentityKey}
-                </div>
-                <Button
-                  variant="outline"
-                  size="icon"
-                  className="h-9 w-9 bg-background shadow-sm shrink-0"
-                  onClick={() => navigator.clipboard.writeText(contact.publicIdentityKey)}
-                  title="Copy key"
+                <div
+                  className={
+                    showIdentityKey
+                      ? "flex-1 min-w-0 max-h-32 rounded-md bg-background p-3 font-mono text-xs break-all border shadow-sm min-h-[3rem] flex items-center overflow-y-auto"
+                      : "flex-1 min-w-0 max-h-32 rounded-md bg-background p-3 font-mono text-xs border shadow-sm min-h-[3rem] flex items-center truncate whitespace-nowrap overflow-y-auto"
+                  }
                 >
-                  <Copy className="h-4 w-4" />
-                </Button>
+                  {showIdentityKey ? contact.publicIdentityKey : identityKeyPreview}
+                </div>
+                <div className="flex flex-col gap-1">
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className="h-9 w-9 bg-background shadow-sm shrink-0"
+                    onClick={() => setShowIdentityKey(!showIdentityKey)}
+                    title={showIdentityKey ? "Hide full key" : "View full key"}
+                  >
+                    {showIdentityKey ? (
+                      <EyeOff className="h-4 w-4" />
+                    ) : (
+                      <Eye className="h-4 w-4" />
+                    )}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className="h-9 w-9 bg-background shadow-sm shrink-0"
+                    onClick={() => navigator.clipboard.writeText(contact.publicIdentityKey)}
+                    title="Copy key"
+                  >
+                    <Copy className="h-4 w-4" />
+                  </Button>
+                </div>
               </div>
+              <p className="mt-2 text-[10px] text-muted-foreground">
+                Base64 length: {contact.publicIdentityKey.length || 0} chars
+              </p>
             </div>
 
             <div className="flex items-start gap-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3 dark:border-emerald-900/30 dark:bg-emerald-900/10">

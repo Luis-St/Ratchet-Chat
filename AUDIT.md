@@ -5,7 +5,7 @@
 
 ## Executive Summary
 
-Ratchet Chat demonstrates a high standard of security engineering, particularly in its implementation of End-to-End Encryption (E2EE) and the Secure Remote Password (SRP) protocol for authentication. The application adheres to a "privacy-by-design" philosophy, ensuring the server has zero knowledge of message contents or user passwords.
+Ratchet Chat demonstrates a high standard of security engineering, particularly in its implementation of End-to-End Encryption (E2EE) and the OPAQUE protocol for authentication. The application adheres to a "privacy-by-design" philosophy, ensuring the server has zero knowledge of message contents or user passwords.
 
 However, several configuration-level risks and potential vulnerabilities in the federation logic were identified. The most critical immediate actions are to secure default credentials and secrets before deployment.
 
@@ -25,17 +25,17 @@ However, several configuration-level risks and potential vulnerabilities in the 
 
 ## 2. Authentication & Authorization
 
-### 2.1 Secure Remote Password (SRP) (STRONG)
-**Description:** The project implements SRP correctly. The server never stores the user's password, only a verifier. This mitigates the impact of a database leak regarding credential theft.
+### 2.1 OPAQUE (STRONG)
+**Description:** The project uses OPAQUE for password authentication. The server never stores the user's password, only a password file derived from the OPAQUE registration flow. This mitigates the impact of a database leak regarding credential theft.
 **Observations:**
-*   `server/lib/srp.ts` and `client/src/lib/srp.ts` align on parameters.
+*   `server/lib/opaque.ts` and `client/src/lib/opaque.ts` align on the registration/login flow.
 *   `kdf_iterations` are configurable and enforce a safe minimum (300,000).
 
 ### 2.2 User Enumeration (MEDIUM)
-**Description:** The `/auth/srp/start` endpoint returns different error messages ("Invalid credentials" vs "Invalid SRP parameters") or has timing differences depending on whether a user exists.
+**Description:** The `/auth/opaque/login/start` endpoint can return different error messages depending on whether a user exists or the request is malformed.
 **Impact:** Allows an attacker to enumerate valid usernames.
 **Mitigation:** The application implements `loginBackoff` which blocks IP/Username pairs after failures. This significantly slows down enumeration attacks.
-**Recommendation:** Standardize error messages and ensure constant-time processing where possible, although the latter is difficult with SRP logic flow.
+**Recommendation:** Standardize error messages and ensure constant-time processing where possible, although the latter is difficult with OPAQUE logic flow.
 
 ### 2.3 Rate Limiting (GOOD)
 **Description:** Middleware is in place (`server/middleware/rateLimit.ts`) to limit requests to auth and federation endpoints.
@@ -44,9 +44,9 @@ However, several configuration-level risks and potential vulnerabilities in the 
 
 ### 3.1 Encryption Implementation (STRONG)
 **Description:** The client (`client/src/lib/crypto.ts`) uses a hybrid encryption scheme:
-*   **Transport Keys:** RSA-OAEP (2048-bit) for encrypting session keys.
+*   **Transport Keys:** ML-KEM-768 for encrypting session keys.
 *   **Message Encryption:** AES-GCM (256-bit) for message content.
-*   **Signatures:** Ed25519 (TweetNaCl) for authenticity.
+*   **Signatures:** ML-DSA-65 for authenticity.
 **Impact:** The server only processes encrypted blobs. It cannot decrypt messages.
 
 ### 3.2 Key Management

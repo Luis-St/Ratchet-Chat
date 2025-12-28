@@ -13,13 +13,12 @@ import {
   deriveMasterKey,
   encryptTransitEnvelope,
   encryptPrivateKey,
-  exportTransportPrivateKey,
-  getIdentityPublicKey,
   getSubtleCrypto,
   generateIdentityKeyPair,
   generateSalt,
   generateTransportKeyPair,
-  importTransportPrivateKey,
+  identitySecretKeyLength,
+  transportSecretKeyLength,
   signMessage,
   type EncryptedPayload,
 } from "@/lib/crypto"
@@ -27,12 +26,11 @@ import { getInstanceHost, normalizeHandle, splitHandle } from "@/lib/handles"
 import { decodeContactRecord } from "@/lib/messageUtils"
 import { isInCall } from "@/lib/callState"
 import {
-  computeClientProof,
-  computeVerifier,
-  generateClientEphemeral,
-  generateSrpSalt,
-  verifyServerProof,
-} from "@/lib/srp"
+  loginFinish,
+  loginStart,
+  registerFinish,
+  registerStart,
+} from "@/lib/opaque"
 import type { Contact, DirectoryEntry } from "@/types/dashboard"
 
 type StoredKeys = {
@@ -45,11 +43,6 @@ type StoredKeys = {
   publicIdentityKey: string
   publicTransportKey: string
   token: string
-}
-
-type PreviousTransportKeyRecord = {
-  encrypted: EncryptedPayload
-  expiresAt: number
 }
 
 export type TransportKeyRotationPayload = {
@@ -74,8 +67,8 @@ type AuthContextValue = {
   token: string | null
   masterKey: CryptoKey | null
   identityPrivateKey: Uint8Array | null
-  transportPrivateKey: CryptoKey | null
-  previousTransportPrivateKey: CryptoKey | null
+  publicIdentityKey: string | null
+  transportPrivateKey: Uint8Array | null
   publicTransportKey: string | null
   register: (username: string, password: string) => Promise<void>
   login: (username: string, password: string) => Promise<void>
@@ -92,8 +85,6 @@ type AuthContextValue = {
 const ACTIVE_SESSION_KEY = "active_session"
 const TRANSPORT_KEY_ROTATED_AT_KEY = "transportKeyRotatedAt"
 const TRANSPORT_KEY_ROTATION_MS = 30 * 24 * 60 * 60 * 1000
-const PREVIOUS_TRANSPORT_KEY_KEY = "previousTransportKey"
-const TRANSPORT_KEY_GRACE_MS = 72 * 60 * 60 * 1000
 const LAST_SELECTED_CHAT_KEY = "lastSelectedChat"
 
 const AuthContext = React.createContext<AuthContextValue | undefined>(undefined)
@@ -176,32 +167,6 @@ async function updateActiveSession(patch: Partial<StoredKeys>) {
   await persistActiveSession({ ...current, ...patch })
 }
 
-async function getPreviousTransportKeyRecord(): Promise<PreviousTransportKeyRecord | null> {
-  const record = await db.syncState.get(PREVIOUS_TRANSPORT_KEY_KEY)
-  const value = record?.value
-  if (!value || typeof value !== "object") {
-    return null
-  }
-  const parsed = value as PreviousTransportKeyRecord
-  if (
-    !parsed.encrypted ||
-    typeof parsed.encrypted.ciphertext !== "string" ||
-    typeof parsed.encrypted.iv !== "string" ||
-    typeof parsed.expiresAt !== "number"
-  ) {
-    return null
-  }
-  return parsed
-}
-
-async function setPreviousTransportKeyRecord(record: PreviousTransportKeyRecord | null) {
-  if (!record) {
-    await db.syncState.delete(PREVIOUS_TRANSPORT_KEY_KEY)
-    return
-  }
-  await db.syncState.put({ key: PREVIOUS_TRANSPORT_KEY_KEY, value: record })
-}
-
 async function getTransportKeyRotatedAt(): Promise<number | null> {
   const record = await db.syncState.get(TRANSPORT_KEY_ROTATED_AT_KEY)
   const value = record?.value
@@ -246,10 +211,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [masterKey, setMasterKey] = React.useState<CryptoKey | null>(null)
   const [identityPrivateKey, setIdentityPrivateKey] =
     React.useState<Uint8Array | null>(null)
+  const [publicIdentityKey, setPublicIdentityKey] =
+    React.useState<string | null>(null)
   const [transportPrivateKey, setTransportPrivateKey] =
-    React.useState<CryptoKey | null>(null)
-  const [previousTransportPrivateKey, setPreviousTransportPrivateKey] =
-    React.useState<CryptoKey | null>(null)
+    React.useState<Uint8Array | null>(null)
   const [publicTransportKey, setPublicTransportKey] =
     React.useState<string | null>(null)
 
@@ -271,8 +236,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setToken(null)
     setMasterKey(null)
     setIdentityPrivateKey(null)
+    setPublicIdentityKey(null)
     setTransportPrivateKey(null)
-    setPreviousTransportPrivateKey(null)
     setPublicTransportKey(null)
     setAuthToken(null)
 
@@ -297,31 +262,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => setUnauthorizedHandler(null)
   }, [clearSession])
 
-  const refreshPreviousTransportKey = React.useCallback(async (key?: CryptoKey | null) => {
-    const activeKey = key ?? masterKey
-    if (!activeKey) {
-      setPreviousTransportPrivateKey(null)
-      return
-    }
-    const record = await getPreviousTransportKeyRecord()
-    if (!record) {
-      setPreviousTransportPrivateKey(null)
-      return
-    }
-    if (record.expiresAt <= Date.now()) {
-      await setPreviousTransportKeyRecord(null)
-      setPreviousTransportPrivateKey(null)
-      return
-    }
-    try {
-      const previousBytes = await decryptPrivateKey(activeKey, record.encrypted)
-      const previousKey = await importTransportPrivateKey(previousBytes)
-      setPreviousTransportPrivateKey(previousKey)
-    } catch {
-      setPreviousTransportPrivateKey(null)
-    }
-  }, [masterKey])
-
   React.useEffect(() => {
     const restore = async () => {
       try {
@@ -344,9 +284,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
         const masterKey = await importMasterKey(masterKeyJson)
 
-        const identityPrivateKey = await decryptPrivateKey(masterKey, session.identityPrivateKey)
-        const transportPrivateBytes = await decryptPrivateKey(masterKey, session.transportPrivateKey)
-        const transportPrivateKey = await importTransportPrivateKey(transportPrivateBytes)
+        const identityPrivateKey = await decryptPrivateKey(
+          masterKey,
+          session.identityPrivateKey
+        )
+        const transportPrivateKey = await decryptPrivateKey(
+          masterKey,
+          session.transportPrivateKey
+        )
+
+        if (
+          identityPrivateKey.length !== identitySecretKeyLength ||
+          transportPrivateKey.length !== transportSecretKeyLength
+        ) {
+          await clearStaleData()
+          setStatus("guest")
+          return
+        }
 
         const userId = decodeJwtSubject(session.token)
 
@@ -360,9 +314,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         })
         setMasterKey(masterKey)
         setIdentityPrivateKey(identityPrivateKey)
+        setPublicIdentityKey(session.publicIdentityKey)
         setTransportPrivateKey(transportPrivateKey)
         setPublicTransportKey(session.publicTransportKey)
-        await refreshPreviousTransportKey(masterKey)
       } catch {
         // Restoration failed - clear data and go to guest
         await clearStaleData()
@@ -372,260 +326,194 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     void restore()
   }, [])
 
-  React.useEffect(() => {
-    if (status !== "authenticated" || !masterKey) {
-      setPreviousTransportPrivateKey(null)
-      return
-    }
-    void refreshPreviousTransportKey()
-  }, [status, masterKey, refreshPreviousTransportKey])
+  const performOpaqueLogin = React.useCallback(
+    async (
+      username: string,
+      handle: string,
+      password: string,
+      paramsOverride?: { kdf_salt: string; kdf_iterations: number }
+    ) => {
+      const params =
+        paramsOverride ??
+        (await apiFetch<{
+          kdf_salt: string
+          kdf_iterations: number
+        }>(`/auth/params/${encodeURIComponent(username)}`))
+      const masterKey = await deriveMasterKey(
+        password,
+        base64ToBytes(params.kdf_salt),
+        params.kdf_iterations
+      )
+      const loginStartState = await loginStart(password)
+      const startResponse = await apiFetch<{ response: string }>(
+        "/auth/opaque/login/start",
+        {
+          method: "POST",
+          body: {
+            username,
+            request: bytesToBase64(loginStartState.request),
+          },
+        }
+      )
+      const loginFinishState = await loginFinish(
+        loginStartState.state,
+        base64ToBytes(startResponse.response)
+      )
+      const loginResponse = await apiFetch<{
+        token: string
+        keys: {
+          encrypted_identity_key: string
+          encrypted_identity_iv: string
+          encrypted_transport_key: string
+          encrypted_transport_iv: string
+          kdf_salt: string
+          kdf_iterations: number
+          public_identity_key: string
+          public_transport_key: string
+        }
+      }>("/auth/opaque/login/finish", {
+        method: "POST",
+        body: {
+          username,
+          finish: bytesToBase64(loginFinishState.finishMessage),
+        },
+      })
 
-  const register = React.useCallback(async (usernameInput: string, password: string) => {
-    const { username, handle } = resolveLocalUser(usernameInput)
-    const kdfSalt = generateSalt()
-    const kdfIterations = 310_000
-    const masterKey = await deriveMasterKey(password, kdfSalt, kdfIterations)
-    const srpSaltBytes = generateSrpSalt()
-    const srpSalt = bytesToBase64(srpSaltBytes)
-    const srpVerifier = await computeVerifier(username, password, srpSalt)
+      const identityPrivateKey = await decryptPrivateKey(
+        masterKey,
+        {
+          ciphertext: loginResponse.keys.encrypted_identity_key,
+          iv: loginResponse.keys.encrypted_identity_iv,
+        }
+      )
+      const transportPrivateKey = await decryptPrivateKey(
+        masterKey,
+        {
+          ciphertext: loginResponse.keys.encrypted_transport_key,
+          iv: loginResponse.keys.encrypted_transport_iv,
+        }
+      )
+      if (
+        identityPrivateKey.length !== identitySecretKeyLength ||
+        transportPrivateKey.length !== transportSecretKeyLength
+      ) {
+        throw new Error("Stored keys are not post-quantum compatible")
+      }
 
-    const identityPair = await generateIdentityKeyPair()
-    const transportPair = await generateTransportKeyPair()
+      setAuthToken(loginResponse.token)
 
-    const encryptedIdentity = await encryptPrivateKey(
-      masterKey,
-      identityPair.privateKey
-    )
-    const transportPrivateBytes = await exportTransportPrivateKey(
-      transportPair.privateKey
-    )
-    const encryptedTransport = await encryptPrivateKey(
-      masterKey,
-      transportPrivateBytes
-    )
-
-    await apiFetch("/auth/register", {
-      method: "POST",
-      body: {
+      const userId = decodeJwtSubject(loginResponse.token)
+      await persistActiveSession({
         username,
+        handle,
+        kdfSalt: params.kdf_salt,
+        kdfIterations: params.kdf_iterations,
+        identityPrivateKey: {
+          ciphertext: loginResponse.keys.encrypted_identity_key,
+          iv: loginResponse.keys.encrypted_identity_iv,
+        },
+        transportPrivateKey: {
+          ciphertext: loginResponse.keys.encrypted_transport_key,
+          iv: loginResponse.keys.encrypted_transport_iv,
+        },
+        publicIdentityKey: loginResponse.keys.public_identity_key,
+        publicTransportKey: loginResponse.keys.public_transport_key,
+        token: loginResponse.token,
+      })
+
+      // Store master key in IndexedDB for persistent sessions
+      await db.syncState.put({
+        key: "masterKey",
+        value: await exportMasterKey(masterKey),
+      })
+
+      setStatus("authenticated")
+      setToken(loginResponse.token)
+      setUser({ id: userId, username, handle })
+      setMasterKey(masterKey)
+      setIdentityPrivateKey(identityPrivateKey)
+      setPublicIdentityKey(loginResponse.keys.public_identity_key)
+      setTransportPrivateKey(transportPrivateKey)
+      setPublicTransportKey(loginResponse.keys.public_transport_key)
+    },
+    []
+  )
+
+  const register = React.useCallback(
+    async (usernameInput: string, password: string) => {
+      const { username, handle } = resolveLocalUser(usernameInput)
+      const kdfSalt = generateSalt()
+      const kdfIterations = 310_000
+      const masterKey = await deriveMasterKey(password, kdfSalt, kdfIterations)
+
+      const identityPair = await generateIdentityKeyPair()
+      const transportPair = await generateTransportKeyPair()
+
+      const encryptedIdentity = await encryptPrivateKey(
+        masterKey,
+        identityPair.privateKey
+      )
+      const encryptedTransport = await encryptPrivateKey(
+        masterKey,
+        transportPair.privateKey
+      )
+
+      const registrationStart = await registerStart(password)
+      const startResponse = await apiFetch<{ response: string }>(
+        "/auth/opaque/register/start",
+        {
+          method: "POST",
+          body: {
+            username,
+            request: bytesToBase64(registrationStart.request),
+          },
+        }
+      )
+      const finishMessage = await registerFinish(
+        registrationStart.state,
+        base64ToBytes(startResponse.response)
+      )
+
+      await apiFetch("/auth/opaque/register/finish", {
+        method: "POST",
+        body: {
+          username,
+          finish: bytesToBase64(finishMessage),
+          kdf_salt: bytesToBase64(kdfSalt),
+          kdf_iterations: kdfIterations,
+          public_identity_key: identityPair.publicKey,
+          public_transport_key: transportPair.publicKey,
+          encrypted_identity_key: encryptedIdentity.ciphertext,
+          encrypted_identity_iv: encryptedIdentity.iv,
+          encrypted_transport_key: encryptedTransport.ciphertext,
+          encrypted_transport_iv: encryptedTransport.iv,
+        },
+      })
+
+      await performOpaqueLogin(username, handle, password, {
         kdf_salt: bytesToBase64(kdfSalt),
         kdf_iterations: kdfIterations,
-        public_identity_key: identityPair.publicKey,
-        public_transport_key: transportPair.publicKey,
-        encrypted_identity_key: encryptedIdentity.ciphertext,
-        encrypted_identity_iv: encryptedIdentity.iv,
-        encrypted_transport_key: encryptedTransport.ciphertext,
-        encrypted_transport_iv: encryptedTransport.iv,
-        srp_salt: srpSalt,
-        srp_verifier: srpVerifier,
-      },
-    })
+      })
+    },
+    [performOpaqueLogin]
+  )
 
-    const { A, a } = generateClientEphemeral()
-    const startResponse = await apiFetch<{ salt: string; B: string }>(
-      "/auth/srp/start",
-      {
-        method: "POST",
-        body: { username, A },
-      }
-    )
-    const proof = await computeClientProof({
-      username,
-      password,
-      saltBase64: startResponse.salt,
-      ABase64: A,
-      BBase64: startResponse.B,
-      a,
-    })
-    const loginResponse = await apiFetch<{
-      token: string
-      M2: string
-      keys: {
-        encrypted_identity_key: string
-        encrypted_identity_iv: string
-        encrypted_transport_key: string
-        encrypted_transport_iv: string
-        kdf_salt: string
-        kdf_iterations: number
-        public_identity_key: string
-        public_transport_key: string
-      }
-    }>("/auth/srp/verify", {
-      method: "POST",
-      body: {
-        username,
-        A,
-        M1: proof.M1,
-      },
-    })
-    const ok = await verifyServerProof({
-      ABase64: A,
-      M1Base64: proof.M1,
-      key: proof.key,
-      M2Base64: loginResponse.M2,
-    })
-    if (!ok) {
-      throw new Error("Unable to verify server proof")
-    }
-    
-    setAuthToken(loginResponse.token)
-
-    const userId = decodeJwtSubject(loginResponse.token)
-    await persistActiveSession({
-      username,
-      handle,
-      kdfSalt: bytesToBase64(kdfSalt),
-      kdfIterations,
-      identityPrivateKey: encryptedIdentity,
-      transportPrivateKey: encryptedTransport,
-      publicIdentityKey: identityPair.publicKey,
-      publicTransportKey: transportPair.publicKey,
-      token: loginResponse.token
-    })
-    
-    // Store master key in IndexedDB for persistent sessions
-    await db.syncState.put({ key: "masterKey", value: await exportMasterKey(masterKey) })
-
-    setStatus("authenticated")
-    setToken(loginResponse.token)
-    setUser({ id: userId, username, handle })
-    setMasterKey(masterKey)
-    setIdentityPrivateKey(identityPair.privateKey)
-    setTransportPrivateKey(transportPair.privateKey)
-    setPublicTransportKey(transportPair.publicKey)
-  }, [])
-
-  const login = React.useCallback(async (usernameInput: string, password: string) => {
-    const { username, handle } = resolveLocalUser(usernameInput)
-    const params = await apiFetch<{
-      kdf_salt: string
-      kdf_iterations: number
-    }>(`/auth/params/${encodeURIComponent(username)}`)
-    const masterKey = await deriveMasterKey(
-      password,
-      base64ToBytes(params.kdf_salt),
-      params.kdf_iterations
-    )
-    const { A, a } = generateClientEphemeral()
-    const startResponse = await apiFetch<{ salt: string; B: string }>(
-      "/auth/srp/start",
-      {
-        method: "POST",
-        body: { username, A },
-      }
-    )
-    const proof = await computeClientProof({
-      username,
-      password,
-      saltBase64: startResponse.salt,
-      ABase64: A,
-      BBase64: startResponse.B,
-      a,
-    })
-    const loginResponse = await apiFetch<{
-      token: string
-      M2: string
-      keys: {
-        encrypted_identity_key: string
-        encrypted_identity_iv: string
-        encrypted_transport_key: string
-        encrypted_transport_iv: string
-        kdf_salt: string
-        kdf_iterations: number
-        public_identity_key: string
-        public_transport_key: string
-      }
-    }>("/auth/srp/verify", {
-      method: "POST",
-      body: {
-        username,
-        A,
-        M1: proof.M1,
-      },
-    })
-    const verified = await verifyServerProof({
-      ABase64: A,
-      M1Base64: proof.M1,
-      key: proof.key,
-      M2Base64: loginResponse.M2,
-    })
-    if (!verified) {
-      throw new Error("Unable to verify server proof")
-    }
-    
-    const identityPrivateKey = await decryptPrivateKey(
-      masterKey,
-      {
-        ciphertext: loginResponse.keys.encrypted_identity_key,
-        iv: loginResponse.keys.encrypted_identity_iv,
-      }
-    )
-    const transportPrivateBytes = await decryptPrivateKey(
-      masterKey,
-      {
-        ciphertext: loginResponse.keys.encrypted_transport_key,
-        iv: loginResponse.keys.encrypted_transport_iv,
-      }
-    )
-    const transportPrivateKey = await importTransportPrivateKey(
-      transportPrivateBytes
-    )
-    
-    setAuthToken(loginResponse.token)
-
-    const userId = decodeJwtSubject(loginResponse.token)
-    await persistActiveSession({
-      username,
-      handle,
-      kdfSalt: params.kdf_salt,
-      kdfIterations: params.kdf_iterations,
-      identityPrivateKey: {
-        ciphertext: loginResponse.keys.encrypted_identity_key,
-        iv: loginResponse.keys.encrypted_identity_iv,
-      },
-      transportPrivateKey: {
-        ciphertext: loginResponse.keys.encrypted_transport_key,
-        iv: loginResponse.keys.encrypted_transport_iv,
-      },
-      publicIdentityKey: loginResponse.keys.public_identity_key,
-      publicTransportKey: loginResponse.keys.public_transport_key,
-      token: loginResponse.token
-    })
-    
-    // Store master key in IndexedDB for persistent sessions
-    await db.syncState.put({ key: "masterKey", value: await exportMasterKey(masterKey) })
-
-    setStatus("authenticated")
-    setToken(loginResponse.token)
-    setUser({ id: userId, username, handle })
-    setMasterKey(masterKey)
-    setIdentityPrivateKey(identityPrivateKey)
-    setTransportPrivateKey(transportPrivateKey)
-    setPublicTransportKey(loginResponse.keys.public_transport_key)
-  }, [])
+  const login = React.useCallback(
+    async (usernameInput: string, password: string) => {
+      const { username, handle } = resolveLocalUser(usernameInput)
+      await performOpaqueLogin(username, handle, password)
+    },
+    [performOpaqueLogin]
+  )
 
   const deleteAccount = React.useCallback(async () => {
     await apiFetch("/auth/account", { method: "DELETE" })
     await clearSession(false) // Don't call logout API, account is already deleted
   }, [clearSession])
 
-  const stashPreviousTransportKey = React.useCallback(async () => {
-    const session = await loadActiveSession()
-    if (!session?.transportPrivateKey) {
-      return
-    }
-    await setPreviousTransportKeyRecord({
-      encrypted: session.transportPrivateKey,
-      expiresAt: Date.now() + TRANSPORT_KEY_GRACE_MS,
-    })
-    if (transportPrivateKey) {
-      setPreviousTransportPrivateKey(transportPrivateKey)
-    }
-  }, [transportPrivateKey])
-
   const notifyContactsOfTransportKeyRotation = React.useCallback(
     async (publicTransportKey: string, rotatedAt: number) => {
-      if (!masterKey || !identityPrivateKey || !user?.handle) {
+      if (!masterKey || !identityPrivateKey || !publicIdentityKey || !user?.handle) {
         return
       }
       const ownerId = user.id ?? user.handle
@@ -652,7 +540,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         public_transport_key: publicTransportKey,
         sender_handle: user.handle,
         sender_signature: signature,
-        sender_identity_key: getIdentityPublicKey(identityPrivateKey),
+        sender_identity_key: publicIdentityKey,
       })
 
       for (const contact of contacts) {
@@ -689,7 +577,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
       }
     },
-    [masterKey, identityPrivateKey, user?.handle, user?.id]
+    [masterKey, identityPrivateKey, publicIdentityKey, user?.handle, user?.id]
   )
 
   const rotateTransportKey = React.useCallback(async () => {
@@ -697,14 +585,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       throw new Error("Key material unavailable")
     }
     const rotatedAt = Date.now()
-    await stashPreviousTransportKey()
     const transportPair = await generateTransportKeyPair()
-    const transportPrivateBytes = await exportTransportPrivateKey(
-      transportPair.privateKey
-    )
     const encryptedTransport = await encryptPrivateKey(
       masterKey,
-      transportPrivateBytes
+      transportPair.privateKey
     )
 
     await apiFetch("/auth/keys/transport", {
@@ -735,7 +619,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     masterKey,
     identityPrivateKey,
     user?.handle,
-    stashPreviousTransportKey,
     notifyContactsOfTransportKeyRotation,
   ])
 
@@ -761,11 +644,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
         await rotateTransportKey()
       }
-      await refreshPreviousTransportKey()
     } finally {
       rotationCheckRef.current = false
     }
-  }, [rotateTransportKey, refreshPreviousTransportKey])
+  }, [rotateTransportKey])
 
   React.useEffect(() => {
     if (status !== "authenticated" || !masterKey) {
@@ -790,29 +672,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return
       }
       try {
-        await stashPreviousTransportKey()
         const encryptedTransport = {
           ciphertext: payload.encrypted_transport_key,
           iv: payload.encrypted_transport_iv,
         }
-        const transportPrivateBytes = await decryptPrivateKey(
-          masterKey,
-          encryptedTransport
-        )
-        const nextTransportKey = await importTransportPrivateKey(
-          transportPrivateBytes
-        )
+        const nextTransportKey = await decryptPrivateKey(masterKey, encryptedTransport)
         await updateActiveSession({
           transportPrivateKey: encryptedTransport,
           publicTransportKey: payload.public_transport_key,
         })
         setTransportPrivateKey(nextTransportKey)
+        setPublicTransportKey(payload.public_transport_key)
         await setTransportKeyRotatedAt(Date.now())
       } catch {
         // Best-effort rotation apply
       }
     },
-    [masterKey, stashPreviousTransportKey]
+    [masterKey]
   )
 
   const loadTransportKeyRotatedAt = React.useCallback(async () => {
@@ -843,8 +719,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       token,
       masterKey,
       identityPrivateKey,
+      publicIdentityKey,
       transportPrivateKey,
-      previousTransportPrivateKey,
       publicTransportKey,
       register,
       login,
@@ -863,8 +739,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       token,
       masterKey,
       identityPrivateKey,
+      publicIdentityKey,
       transportPrivateKey,
-      previousTransportPrivateKey,
+      publicTransportKey,
       register,
       login,
       deleteAccount,

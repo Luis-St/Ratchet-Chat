@@ -8,8 +8,9 @@ The server never receives plaintext messages, raw passwords, or private keys.
 
 ## Authentication
 
-- JWT is required for all endpoints except `POST /auth/register`, `GET /auth/params/:username`,
-  `POST /auth/login`, `POST /auth/srp/start`, `POST /auth/srp/verify`,
+- JWT is required for all endpoints except `POST /auth/opaque/register/start`,
+  `POST /auth/opaque/register/finish`, `GET /auth/params/:username`,
+  `POST /auth/opaque/login/start`, `POST /auth/opaque/login/finish`,
   `GET /directory/:handle`, `GET /api/directory`, `GET /api/federation/key`,
   `POST /api/federation/incoming`.
 - Send the token using `Authorization: Bearer <jwt>`.
@@ -27,8 +28,8 @@ Common errors:
 - All `id` fields are UUID strings.
 - `handle` is a `username@host` string (e.g. `alice@example.com`).
 - `encrypted_blob` is opaque data (Base64 or other safe string encoding).
-- `public_identity_key` is a Base64 Ed25519 public key.
-- `public_transport_key` is a Base64 RSA/X25519 public key.
+- `public_identity_key` is a Base64 ML-DSA-65 public key.
+- `public_transport_key` is a Base64 ML-KEM-768 public key.
 - The server does not validate cryptographic material beyond basic type checks.
 
 ## Endpoints
@@ -36,12 +37,41 @@ Common errors:
 ### Group 0: Public
 
 #### POST /auth/register
-Registers a user and stores public keys.
+Deprecated. Use OPAQUE registration endpoints.
+
+Response:
+```json
+{
+  "error": "Use OPAQUE registration endpoints"
+}
+```
+
+#### POST /auth/opaque/register/start
+Starts OPAQUE registration.
 
 Request body:
 ```json
 {
   "username": "alice",
+  "request": "base64"
+}
+```
+
+Response:
+```json
+{
+  "response": "base64"
+}
+```
+
+#### POST /auth/opaque/register/finish
+Completes OPAQUE registration and stores public keys.
+
+Request body:
+```json
+{
+  "username": "alice",
+  "finish": "base64",
   "kdf_salt": "base64",
   "kdf_iterations": 310000,
   "public_identity_key": "base64",
@@ -49,9 +79,7 @@ Request body:
   "encrypted_identity_key": "base64",
   "encrypted_identity_iv": "base64",
   "encrypted_transport_key": "base64",
-  "encrypted_transport_iv": "base64",
-  "srp_salt": "base64",
-  "srp_verifier": "base64"
+  "encrypted_transport_iv": "base64"
 }
 ```
 
@@ -81,45 +109,41 @@ Response:
 ```
 
 #### POST /auth/login
-Deprecated. Use SRP login endpoints.
+Deprecated. Use OPAQUE login endpoints.
 
 Response:
 ```json
 {
-  "error": "Use SRP login endpoints"
+  "error": "Use OPAQUE login endpoints"
 }
 ```
 
-#### POST /auth/srp/start
-Starts SRP-6a login by accepting the client ephemeral `A` and returning the SRP
-salt and server ephemeral `B`.
+#### POST /auth/opaque/login/start
+Starts OPAQUE login.
 
 Request body:
 ```json
 {
   "username": "alice",
-  "A": "base64"
+  "request": "base64"
 }
 ```
 
 Response:
 ```json
 {
-  "salt": "base64",
-  "B": "base64"
+  "response": "base64"
 }
 ```
 
-#### POST /auth/srp/verify
-Completes SRP-6a login by verifying the client proof `M1`. Returns JWT, encrypted
-keys, and server proof `M2` so the client can verify the server.
+#### POST /auth/opaque/login/finish
+Completes OPAQUE login and returns JWT + encrypted keys.
 
 Request body:
 ```json
 {
   "username": "alice",
-  "A": "base64",
-  "M1": "base64"
+  "finish": "base64"
 }
 ```
 
@@ -127,7 +151,6 @@ Response:
 ```json
 {
   "token": "jwt",
-  "M2": "base64",
   "keys": {
     "encrypted_identity_key": "base64",
     "encrypted_identity_iv": "base64",
@@ -228,7 +251,7 @@ Federation endpoint used by remote hosts to enqueue a message.
 
 Security:
 - Callback verification is required. Include `X-Ratchet-Host` and `X-Ratchet-Sig`
-  headers and sign the JSON payload with the sender host's Ed25519 private key.
+  headers and sign the JSON payload with the sender host's ML-DSA-65 private key.
 
 Request body:
 ```json

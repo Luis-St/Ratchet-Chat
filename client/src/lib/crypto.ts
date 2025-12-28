@@ -1,8 +1,11 @@
-import nacl from "tweetnacl"
+import { ml_dsa65 } from "@noble/post-quantum/ml-dsa.js"
+import { ml_kem768 } from "@noble/post-quantum/ml-kem.js"
 
 const textEncoder = new TextEncoder()
 const textDecoder = new TextDecoder()
 const MESSAGE_SIGNATURE_PREFIX = "ratchet-chat:message:v1"
+export const identitySecretKeyLength = ml_dsa65.lengths.secretKey
+export const transportSecretKeyLength = ml_kem768.lengths.secretKey
 
 type WebCryptoWithSubtle = Crypto & { subtle: SubtleCrypto }
 
@@ -39,11 +42,11 @@ export type IdentityKeyPair = {
 
 export type TransportKeyPair = {
   publicKey: string
-  privateKey: CryptoKey
+  privateKey: Uint8Array
 }
 
 export type TransitEnvelope = {
-  wrapped_key: string
+  cipherText: string
   iv: string
   ciphertext: string
 }
@@ -161,7 +164,7 @@ export async function deriveAuthHash(
 }
 
 export async function generateIdentityKeyPair(): Promise<IdentityKeyPair> {
-  const pair = nacl.sign.keyPair()
+  const pair = ml_dsa65.keygen()
   return {
     publicKey: bytesToBase64(pair.publicKey),
     privateKey: pair.secretKey,
@@ -169,64 +172,25 @@ export async function generateIdentityKeyPair(): Promise<IdentityKeyPair> {
 }
 
 export async function generateTransportKeyPair(): Promise<TransportKeyPair> {
-  const subtle = getSubtleCrypto()
-  const pair = await subtle.generateKey(
-    {
-      name: "RSA-OAEP",
-      modulusLength: 2048,
-      publicExponent: new Uint8Array([1, 0, 1]),
-      hash: "SHA-256",
-    },
-    true,
-    ["encrypt", "decrypt"]
-  )
-  const publicKey = await subtle.exportKey("spki", pair.publicKey)
+  const pair = ml_kem768.keygen()
   return {
-    publicKey: arrayBufferToBase64(publicKey),
-    privateKey: pair.privateKey,
+    publicKey: bytesToBase64(pair.publicKey),
+    privateKey: pair.secretKey,
   }
 }
 
 export function getIdentityPublicKey(privateKey: Uint8Array): string {
-  const pair = nacl.sign.keyPair.fromSecretKey(privateKey)
-  return bytesToBase64(pair.publicKey)
-}
-
-export async function importTransportPublicKey(
-  publicKeyBase64: string
-): Promise<CryptoKey> {
-  return getSubtleCrypto().importKey(
-    "spki",
-    base64ToArrayBuffer(publicKeyBase64),
-    {
-      name: "RSA-OAEP",
-      hash: "SHA-256",
-    },
-    true,
-    ["encrypt"]
-  )
-}
-
-export async function exportTransportPrivateKey(
-  privateKey: CryptoKey
-): Promise<Uint8Array> {
-  const pkcs8 = await getSubtleCrypto().exportKey("pkcs8", privateKey)
-  return new Uint8Array(pkcs8)
-}
-
-export async function importTransportPrivateKey(
-  privateKeyBytes: Uint8Array
-): Promise<CryptoKey> {
-  return getSubtleCrypto().importKey(
-    "pkcs8",
-    bytesToArrayBuffer(privateKeyBytes),
-    {
-      name: "RSA-OAEP",
-      hash: "SHA-256",
-    },
-    true,
-    ["decrypt"]
-  )
+  const dsa = ml_dsa65 as unknown as {
+    getPublicKey?: (secretKey: Uint8Array) => Uint8Array
+    publicKeyFromSecretKey?: (secretKey: Uint8Array) => Uint8Array
+  }
+  const publicKey =
+    dsa.getPublicKey?.(privateKey) ??
+    dsa.publicKeyFromSecretKey?.(privateKey)
+  if (!publicKey) {
+    throw new Error("Unable to derive ML-DSA public key from secret key")
+  }
+  return bytesToBase64(publicKey)
 }
 
 export async function encryptBytes(
@@ -259,7 +223,8 @@ export async function decryptBytes(
 }
 
 export function signMessage(message: Uint8Array, privateKey: Uint8Array): string {
-  return bytesToBase64(nacl.sign.detached(message, privateKey))
+  const signature = ml_dsa65.sign(message, privateKey)
+  return bytesToBase64(signature)
 }
 
 export async function encryptString(
@@ -312,11 +277,12 @@ export async function encryptTransitEnvelope(
   recipientPublicKey: string
 ): Promise<string> {
   const cryptoRef = getWebCrypto()
-  const transportPublicKey = await importTransportPublicKey(recipientPublicKey)
-  const aesKeyBytes = cryptoRef.getRandomValues(new Uint8Array(32))
+  const { cipherText, sharedSecret } = ml_kem768.encapsulate(
+    base64ToBytes(recipientPublicKey)
+  )
   const aesKey = await cryptoRef.subtle.importKey(
     "raw",
-    bytesToArrayBuffer(aesKeyBytes),
+    bytesToArrayBuffer(sharedSecret),
     "AES-GCM",
     false,
     ["encrypt", "decrypt"]
@@ -325,13 +291,8 @@ export async function encryptTransitEnvelope(
     aesKey,
     textEncoder.encode(payload)
   )
-  const wrappedKey = await cryptoRef.subtle.encrypt(
-    { name: "RSA-OAEP" },
-    transportPublicKey,
-    bytesToArrayBuffer(aesKeyBytes)
-  )
   const envelope: TransitEnvelope = {
-    wrapped_key: arrayBufferToBase64(wrappedKey),
+    cipherText: bytesToBase64(cipherText),
     iv: bytesToBase64(iv),
     ciphertext: bytesToBase64(ciphertext),
   }
@@ -340,34 +301,25 @@ export async function encryptTransitEnvelope(
 
 export async function decryptTransitBlob(
   encryptedBlob: string,
-  transportPrivateKey: CryptoKey
+  transportPrivateKey: Uint8Array
 ): Promise<Uint8Array> {
-  const subtle = getSubtleCrypto()
-  let envelope: TransitEnvelope | null = null
+  let envelope: TransitEnvelope
   try {
     envelope = JSON.parse(encryptedBlob) as TransitEnvelope
   } catch {
-    envelope = null
+    throw new Error("Invalid transit envelope")
+  }
+  if (!envelope?.cipherText || !envelope.iv || !envelope.ciphertext) {
+    throw new Error("Invalid transit envelope")
   }
 
-  if (!envelope?.wrapped_key) {
-    const decrypted = await subtle.decrypt(
-      { name: "RSA-OAEP" },
-      transportPrivateKey,
-      base64ToArrayBuffer(encryptedBlob)
-    )
-    return new Uint8Array(decrypted)
-  }
-
-  const wrappedKey = base64ToArrayBuffer(envelope.wrapped_key)
-  const aesKeyBytes = await subtle.decrypt(
-    { name: "RSA-OAEP" },
-    transportPrivateKey,
-    wrappedKey
+  const sharedSecret = ml_kem768.decapsulate(
+    base64ToBytes(envelope.cipherText),
+    transportPrivateKey
   )
-  const aesKey = await subtle.importKey(
+  const aesKey = await getSubtleCrypto().importKey(
     "raw",
-    aesKeyBytes,
+    bytesToArrayBuffer(sharedSecret),
     "AES-GCM",
     false,
     ["decrypt"]
@@ -384,38 +336,36 @@ export function verifySignature(
   signature: string,
   publicKey: string
 ): boolean {
-  return nacl.sign.detached.verify(
-    message,
+  return ml_dsa65.verify(
     base64ToBytes(signature),
+    message,
     base64ToBytes(publicKey)
   )
 }
-    
-    export async function generateSafetyNumber(
-      key1: string,
-      key2: string
-    ): Promise<string> {
-      const sorted = [key1, key2].sort()
-      const input = sorted.join("")
-      const hash = await getSubtleCrypto().digest(
-        "SHA-256",
-        textEncoder.encode(input)
-      )
-      const bytes = new Uint8Array(hash)
-      
-      // Take first 8 bytes (64 bits) -> ~1.8x10^19 possibilities
-      // We want a human readable number, say 12 digits (4 blocks of 3)
-      // We can treat the bytes as a large integer and modulo 10^12
-      
-      let num = BigInt(0)
-      for (let i = 0; i < 8; i++) {
-        num = (num << BigInt(8)) + BigInt(bytes[i])
-      }
-      
-      const fingerprint = (num % BigInt(1000000000000)).toString().padStart(12, "0")
-      
-      // Format as XXX XXX XXX XXX
-      return fingerprint.match(/.{1,3}/g)?.join(" ") ?? fingerprint
-    }
-    
-    
+
+export async function generateSafetyNumber(
+  key1: string,
+  key2: string
+): Promise<string> {
+  const sorted = [key1, key2].sort()
+  const input = sorted.join("")
+  const hash = await getSubtleCrypto().digest(
+    "SHA-256",
+    textEncoder.encode(input)
+  )
+  const bytes = new Uint8Array(hash)
+
+  // Take first 8 bytes (64 bits) -> ~1.8x10^19 possibilities
+  // We want a human readable number, say 12 digits (4 blocks of 3)
+  // We can treat the bytes as a large integer and modulo 10^12
+
+  let num = BigInt(0)
+  for (let i = 0; i < 8; i++) {
+    num = (num << BigInt(8)) + BigInt(bytes[i])
+  }
+
+  const fingerprint = (num % BigInt(1000000000000)).toString().padStart(12, "0")
+
+  // Format as XXX XXX XXX XXX
+  return fingerprint.match(/.{1,3}/g)?.join(" ") ?? fingerprint
+}

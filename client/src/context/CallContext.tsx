@@ -8,7 +8,6 @@ import {
   encryptTransitEnvelope,
   buildMessageSignaturePayload,
   signMessage,
-  getIdentityPublicKey,
   generateSafetyNumber,
 } from "@/lib/crypto"
 import { ICE_SERVERS, type SignalingPayload } from "@/lib/webrtc"
@@ -122,9 +121,9 @@ const CallContext = React.createContext<CallContextValue | undefined>(undefined)
 export function CallProvider({ children }: { children: React.ReactNode }) {
   const {
     transportPrivateKey,
-    previousTransportPrivateKey,
     publicTransportKey,
     identityPrivateKey,
+    publicIdentityKey,
     user,
   } = useAuth()
 
@@ -222,7 +221,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
       callType: CallType,
       extra: { sdp?: string; candidate?: RTCIceCandidateInit } = {}
     ) => {
-      if (!identityPrivateKey || !user?.handle) {
+      if (!identityPrivateKey || !publicIdentityKey || !user?.handle) {
         throw new Error("Not authenticated")
       }
 
@@ -246,7 +245,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
       const signedPayload: CallMessagePayload = {
         ...payload,
         sender_signature: signature,
-        sender_identity_key: getIdentityPublicKey(identityPrivateKey),
+        sender_identity_key: publicIdentityKey,
       }
 
       // Encrypt with recipient's transport key
@@ -268,7 +267,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
 
       return response
     },
-    [identityPrivateKey, user?.handle]
+    [identityPrivateKey, publicIdentityKey, user?.handle]
   )
 
   // Send pending ICE candidates

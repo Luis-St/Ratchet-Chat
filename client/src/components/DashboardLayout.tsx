@@ -29,7 +29,6 @@ import {
   encryptString,
   encryptTransitEnvelope,
   decryptTransitBlob,
-  getIdentityPublicKey,
   signMessage,
   decodeUtf8,
 } from "@/lib/crypto"
@@ -64,8 +63,8 @@ export function DashboardLayout() {
     user,
     masterKey,
     identityPrivateKey,
+    publicIdentityKey,
     transportPrivateKey,
-    previousTransportPrivateKey,
     logout,
     applyTransportKeyRotation,
   } = useAuth()
@@ -279,7 +278,7 @@ export function DashboardLayout() {
       timestamp: string,
       fallbackTransportKey?: string
     ) => {
-      if (!identityPrivateKey || !user?.handle) {
+      if (!identityPrivateKey || !publicIdentityKey || !user?.handle) {
         return false
       }
       const targetMessageId = message.messageId ?? message.id
@@ -307,7 +306,7 @@ export function DashboardLayout() {
         receipt_timestamp: timestamp,
         sender_handle: user.handle,
         sender_signature: signature,
-        sender_identity_key: getIdentityPublicKey(identityPrivateKey),
+        sender_identity_key: publicIdentityKey,
         message_id: targetMessageId,
       })
       const encryptedBlob = await encryptTransitEnvelope(
@@ -325,10 +324,7 @@ export function DashboardLayout() {
       })
       return true
     },
-    [
-      identityPrivateKey,
-      user?.handle,
-    ]
+    [identityPrivateKey, publicIdentityKey, user?.handle]
   )
 
   const updateReactionPickerPosition = React.useCallback(() => {
@@ -380,13 +376,7 @@ export function DashboardLayout() {
         try {
           plaintextBytes = await decryptTransitBlob(data.encrypted_blob, transportPrivateKey)
         } catch {
-          if (!previousTransportPrivateKey) {
-            return
-          }
-          plaintextBytes = await decryptTransitBlob(
-            data.encrypted_blob,
-            previousTransportPrivateKey
-          )
+          return
         }
         const plaintext = decodeUtf8(plaintextBytes)
         const payload = JSON.parse(plaintext) as { type: string; status?: boolean }
@@ -419,7 +409,7 @@ export function DashboardLayout() {
     return () => {
       socket.off("signal", handleSignal)
     }
-  }, [socket, transportPrivateKey, previousTransportPrivateKey, runSync])
+  }, [socket, transportPrivateKey, runSync])
 
   const messagesByPeer = React.useMemo(() => {
     const map = new Map<string, StoredMessage[]>()
@@ -1628,7 +1618,7 @@ export function DashboardLayout() {
     if (!trimmed && !attachment) {
       return
     }
-    if (!activeContact || !masterKey || !identityPrivateKey) {
+    if (!activeContact || !masterKey || !identityPrivateKey || !publicIdentityKey) {
       setSendError("Select a recipient before sending.")
       return
     }
@@ -1680,7 +1670,7 @@ export function DashboardLayout() {
         content: trimmed,
         sender_handle: user.handle,
         sender_signature: signature,
-        sender_identity_key: getIdentityPublicKey(identityPrivateKey),
+        sender_identity_key: publicIdentityKey,
         message_id: messageId,
         attachments,
         ...(replyPayload ?? {}),
@@ -1762,6 +1752,7 @@ export function DashboardLayout() {
     activeContact,
     composeText,
     identityPrivateKey,
+    publicIdentityKey,
     masterKey,
     updateMessagePayload,
     user?.handle,
@@ -1784,7 +1775,7 @@ export function DashboardLayout() {
       cancelEdit()
       return
     }
-    if (!activeContact || !masterKey || !identityPrivateKey) {
+    if (!activeContact || !masterKey || !identityPrivateKey || !publicIdentityKey) {
       setSendError("Select a recipient before editing.")
       return
     }
@@ -1820,7 +1811,7 @@ export function DashboardLayout() {
         content: trimmed,
         sender_handle: user.handle,
         sender_signature: signature,
-        sender_identity_key: getIdentityPublicKey(identityPrivateKey),
+        sender_identity_key: publicIdentityKey,
         message_id: targetMessageId,
         edited_at: editedAt,
       })
@@ -1905,6 +1896,7 @@ export function DashboardLayout() {
     activeContact,
     masterKey,
     identityPrivateKey,
+    publicIdentityKey,
     user?.handle,
     user?.id,
     socket,
@@ -1915,7 +1907,7 @@ export function DashboardLayout() {
       if (message.direction !== "out") {
         return
       }
-      if (!activeContact || !masterKey || !identityPrivateKey) {
+      if (!activeContact || !masterKey || !identityPrivateKey || !publicIdentityKey) {
         setSendError("Select a recipient before deleting.")
         return
       }
@@ -1962,13 +1954,13 @@ export function DashboardLayout() {
         )
         const payload = JSON.stringify({
           type: "delete",
-          content: DELETE_SIGNATURE_BODY,
-          sender_handle: user.handle,
-          sender_signature: signature,
-          sender_identity_key: getIdentityPublicKey(identityPrivateKey),
-          message_id: targetMessageId,
-          deleted_at: deletedAt,
-        })
+        content: DELETE_SIGNATURE_BODY,
+        sender_handle: user.handle,
+        sender_signature: signature,
+        sender_identity_key: publicIdentityKey,
+        message_id: targetMessageId,
+        deleted_at: deletedAt,
+      })
         const encryptedBlob = await encryptTransitEnvelope(
           payload,
           activeContact.publicTransportKey
@@ -2046,6 +2038,7 @@ export function DashboardLayout() {
       activeContact,
       masterKey,
       identityPrivateKey,
+      publicIdentityKey,
       user?.handle,
       user?.id,
       editingMessage,
@@ -2063,7 +2056,7 @@ export function DashboardLayout() {
       if (!emoji) {
         return
       }
-      if (!activeContact || !masterKey || !identityPrivateKey) {
+      if (!activeContact || !masterKey || !identityPrivateKey || !publicIdentityKey) {
         setSendError("Select a recipient before reacting.")
         return
       }
@@ -2107,7 +2100,7 @@ export function DashboardLayout() {
           reaction_emoji: emoji,
           sender_handle: user.handle,
           sender_signature: signature,
-          sender_identity_key: getIdentityPublicKey(identityPrivateKey),
+          sender_identity_key: publicIdentityKey,
           message_id: targetMessageId,
         })
         const encryptedBlob = await encryptTransitEnvelope(
@@ -2189,6 +2182,7 @@ export function DashboardLayout() {
       activeContact,
       masterKey,
       identityPrivateKey,
+      publicIdentityKey,
       user?.handle,
       user?.id,
       socket,

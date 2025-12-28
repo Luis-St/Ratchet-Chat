@@ -110,7 +110,11 @@ export const verifyFederationSignature =
     }
 
     const payload = JSON.stringify(req.body ?? {});
-    const verified = verifyFederationPayload(payload, signature, keyEntry.key);
+    const verified = verifyFederationPayload(
+      payload,
+      signature,
+      keyEntry.publicKeyBytes
+    );
     if (!verified) {
       serverLogger.warn("federation.verify.failed", {
         reason: "invalid_signature",
