@@ -118,7 +118,7 @@ type TransitPayload = {
   // Call signaling fields
   call_type?: "AUDIO" | "VIDEO"
   call_id?: string
-  call_action?: "offer" | "answer" | "ice" | "busy" | "declined" | "end" | "ringing"
+  call_action?: "offer" | "answer" | "ice" | "busy" | "declined" | "end" | "ringing" | "session_accepted" | "session_declined"
   sdp?: string
   candidate?: RTCIceCandidateInit
   timestamp?: string

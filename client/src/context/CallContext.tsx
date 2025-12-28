@@ -14,6 +14,7 @@ import {
 import { ICE_SERVERS, type SignalingPayload } from "@/lib/webrtc"
 import { useWebRTC, type ConnectionState } from "@/hooks/useWebRTC"
 import { useAuth } from "@/context/AuthContext"
+import { useSocket } from "@/context/SocketContext"
 import { setInCall } from "@/lib/callState"
 
 function logCall(level: "info" | "warn" | "error", message: string, data?: Record<string, unknown>): void {
@@ -49,6 +50,7 @@ export type CallState = {
   error: string | null
   startedAt: Date | null
   safetyNumber: string | null
+  suppressNotifications: boolean
 }
 
 // Call signaling message payload (sent inside encrypted_blob)
@@ -64,6 +66,8 @@ export type CallMessagePayload = {
     | "declined"
     | "end"
     | "ringing"
+    | "session_accepted"
+    | "session_declined"
   sdp?: string
   candidate?: RTCIceCandidateInit
   sender_signature: string
@@ -87,6 +91,7 @@ export type CallNoticePayload = {
 
 type CallContextValue = {
   callState: CallState
+  externalCallActive: boolean
   localStream: MediaStream | null
   remoteStream: MediaStream | null
   remoteStreamVersion: number
@@ -106,6 +111,7 @@ type CallContextValue = {
   toggleScreenShare: () => void
   toggleReadabilityMode: () => void
   handleCallMessage: (senderHandle: string, senderIdentityKey: string, payload: CallMessagePayload) => void
+  silenceIncomingCall: () => void
 }
 
 const initialCallState: CallState = {
@@ -119,9 +125,20 @@ const initialCallState: CallState = {
   error: null,
   startedAt: null,
   safetyNumber: null,
+  suppressNotifications: false,
 }
 
 const CALL_TIMEOUT_MS = 120_000 // 120 seconds
+
+const isLocalCallActive = (status: CallStatus) =>
+  status === "initiating" ||
+  status === "ringing" ||
+  status === "connecting" ||
+  status === "connected"
+
+const CALL_SESSION_CHANNEL = "ratchet-call-session"
+const CALL_SESSION_CLAIMED = "CALL_SESSION_CLAIMED"
+const CALL_SESSION_UPDATE = "CALL_SESSION_UPDATE"
 
 const CallContext = React.createContext<CallContextValue | undefined>(undefined)
 
@@ -133,8 +150,10 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
     publicIdentityKey,
     user,
   } = useAuth()
+  const socket = useSocket()
 
   const [callState, setCallState] = useState<CallState>(initialCallState)
+  const [externalCallActive, setExternalCallActive] = useState(false)
   const [localStream, setLocalStream] = useState<MediaStream | null>(null)
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null)
   const [remoteStreamVersion, setRemoteStreamVersion] = useState(0)
@@ -146,11 +165,220 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
 
   const callStateRef = useRef(callState)
   callStateRef.current = callState
+  const externalCallActiveRef = useRef(externalCallActive)
+  externalCallActiveRef.current = externalCallActive
+  const callSessionOwnerRef = useRef(false)
+  const sessionIdRef = useRef(
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : `session-${Math.random().toString(36).slice(2)}`
+  )
+  const broadcastRef = useRef<BroadcastChannel | null>(null)
 
   const pendingOfferRef = useRef<{ offer: SignalingPayload; peerPublicKey: string; peerIdentityKey: string } | null>(null)
   const timeoutRef = useRef<NodeJS.Timeout | null>(null)
   const lastInboundAudioRef = useRef<{ energy: number; duration: number } | null>(null)
   const lastOutboundAudioRef = useRef<{ energy: number; duration: number } | null>(null)
+  const pendingIceCandidatesRef = useRef<RTCIceCandidate[]>([])
+
+  const clearIncomingForExternalCall = useCallback(() => {
+    if (callStateRef.current.status !== "incoming") {
+      return
+    }
+    pendingOfferRef.current = null
+    pendingIceCandidatesRef.current = []
+    setCallState({ ...initialCallState, suppressNotifications: true })
+  }, [])
+
+  const handleExternalSessionSignal = useCallback(
+    (payload: {
+      status?: "active" | "idle"
+      action?: "accepted" | "declined"
+      call_id?: string | null
+      origin?: string
+    }) => {
+      if (!payload || payload.origin === sessionIdRef.current) {
+        return
+      }
+      if (callSessionOwnerRef.current) {
+        return
+      }
+
+      if (payload.action) {
+        clearIncomingForExternalCall()
+        if (payload.action === "accepted") {
+          externalCallActiveRef.current = true
+          setExternalCallActive(true)
+        } else {
+          externalCallActiveRef.current = false
+          setExternalCallActive(false)
+        }
+        return
+      }
+
+      if (payload.status === "active") {
+        externalCallActiveRef.current = true
+        setExternalCallActive(true)
+        clearIncomingForExternalCall()
+      } else if (payload.status === "idle") {
+        externalCallActiveRef.current = false
+        setExternalCallActive(false)
+      }
+    },
+    [clearIncomingForExternalCall]
+  )
+
+  const broadcastSessionUpdate = useCallback((status: "active" | "idle") => {
+    if (typeof window === "undefined") return
+    const payload = { status, origin: sessionIdRef.current, ts: Date.now() }
+    if (broadcastRef.current) {
+      broadcastRef.current.postMessage(payload)
+    }
+    try {
+      window.localStorage.setItem(CALL_SESSION_CHANNEL, JSON.stringify(payload))
+    } catch {
+      // Ignore storage failures
+    }
+  }, [])
+
+  const broadcastSessionClaim = useCallback(
+    (action: "accepted" | "declined", callId: string | null) => {
+      if (typeof window === "undefined") return
+      const payload = {
+        action,
+        call_id: callId,
+        origin: sessionIdRef.current,
+        ts: Date.now(),
+      }
+      if (broadcastRef.current) {
+        broadcastRef.current.postMessage(payload)
+      }
+      try {
+        window.localStorage.setItem(CALL_SESSION_CHANNEL, JSON.stringify(payload))
+      } catch {
+        // Ignore storage failures
+      }
+    },
+    []
+  )
+
+  const emitSessionClaim = useCallback(
+    (action: "accepted" | "declined") => {
+      const callId = callStateRef.current.callId
+      if (socket) {
+        socket.emit(CALL_SESSION_CLAIMED, {
+          action,
+          call_id: callId,
+          peer_handle: callStateRef.current.peerHandle,
+        })
+      }
+      broadcastSessionClaim(action, callId ?? null)
+    },
+    [socket, broadcastSessionClaim]
+  )
+
+  useEffect(() => {
+    if (!socket) return
+
+    const handleSessionUpdate = (payload: { status?: string; origin?: string }) => {
+      if (!payload || payload.origin === socket.id) {
+        return
+      }
+      handleExternalSessionSignal(payload)
+    }
+
+    const handleSessionClaim = (payload: {
+      action?: "accepted" | "declined"
+      call_id?: string | null
+      origin?: string
+    }) => {
+      if (!payload || payload.origin === socket.id) {
+        return
+      }
+      handleExternalSessionSignal(payload)
+    }
+
+    socket.on(CALL_SESSION_UPDATE, handleSessionUpdate)
+    socket.on(CALL_SESSION_CLAIMED, handleSessionClaim)
+    return () => {
+      socket.off(CALL_SESSION_UPDATE, handleSessionUpdate)
+      socket.off(CALL_SESSION_CLAIMED, handleSessionClaim)
+    }
+  }, [socket, handleExternalSessionSignal])
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+
+    if ("BroadcastChannel" in window) {
+      const channel = new BroadcastChannel(CALL_SESSION_CHANNEL)
+      broadcastRef.current = channel
+      channel.onmessage = (event) => {
+        handleExternalSessionSignal(event.data as {
+          status?: "active" | "idle"
+          action?: "accepted" | "declined"
+          call_id?: string | null
+          origin?: string
+        })
+      }
+    }
+
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key !== CALL_SESSION_CHANNEL || !event.newValue) {
+        return
+      }
+      try {
+        const payload = JSON.parse(event.newValue) as {
+          status?: "active" | "idle"
+          action?: "accepted" | "declined"
+          call_id?: string | null
+          origin?: string
+        }
+        handleExternalSessionSignal(payload)
+      } catch {
+        // Ignore invalid payloads
+      }
+    }
+
+    window.addEventListener("storage", handleStorage)
+    return () => {
+      window.removeEventListener("storage", handleStorage)
+      if (broadcastRef.current) {
+        broadcastRef.current.close()
+        broadcastRef.current = null
+      }
+    }
+  }, [handleExternalSessionSignal])
+
+  useEffect(() => {
+    const localActive = isLocalCallActive(callState.status)
+    if (localActive && !callSessionOwnerRef.current) {
+      callSessionOwnerRef.current = true
+      externalCallActiveRef.current = false
+      setExternalCallActive(false)
+      if (socket) {
+        socket.emit("CALL_SESSION_UPDATE", {
+          status: "active",
+          call_id: callState.callId,
+          peer_handle: callState.peerHandle,
+        })
+      }
+      broadcastSessionUpdate("active")
+    }
+
+    if (!localActive && callSessionOwnerRef.current) {
+      callSessionOwnerRef.current = false
+      if (socket) {
+        socket.emit("CALL_SESSION_UPDATE", {
+          status: "idle",
+          call_id: callState.callId,
+          peer_handle: callState.peerHandle,
+        })
+      }
+      externalCallActiveRef.current = false
+      setExternalCallActive(false)
+      broadcastSessionUpdate("idle")
+    }
+  }, [socket, callState.status, callState.callId, callState.peerHandle, broadcastSessionUpdate])
 
   // Calculate safety number when keys are available
   useEffect(() => {
@@ -202,7 +430,6 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
     }
   }, [])
 
-  const pendingIceCandidatesRef = useRef<RTCIceCandidate[]>([])
   const isRenegotiatingRef = useRef(false)
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null)
   const sendCallMessageRef = useRef<typeof sendCallMessage | null>(null)
@@ -384,6 +611,21 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
         currentStatus: callStateRef.current.status,
       })
 
+      if (
+        payload.call_action === "session_accepted" ||
+        payload.call_action === "session_declined"
+      ) {
+        clearIncomingForExternalCall()
+        if (payload.call_action === "session_accepted") {
+          externalCallActiveRef.current = true
+          setExternalCallActive(true)
+        } else {
+          externalCallActiveRef.current = false
+          setExternalCallActive(false)
+        }
+        return
+      }
+
       // Verify the sender's identity key matches what we expect
       if (callStateRef.current.peerIdentityKey && senderIdentityKey !== callStateRef.current.peerIdentityKey) {
         logCall("error", "Identity key mismatch in call message")
@@ -432,7 +674,10 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
           }
 
           // New incoming call
-          if (callStateRef.current.status !== "idle") {
+          if (
+            callStateRef.current.status !== "idle" ||
+            externalCallActiveRef.current
+          ) {
             // Auto-respond busy - need to fetch transport key first
             void (async () => {
               try {
@@ -466,6 +711,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
             error: null,
             startedAt: null,
             safetyNumber: null,
+            suppressNotifications: false,
           })
 
           // Store the offer for when user accepts
@@ -667,6 +913,10 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
     async (peerHandle: string, peerPublicKey: string, peerIdentityKey: string, callType: CallType) => {
       logCall("info", "Initiating call", { peerHandle, callType, currentStatus: callState.status })
 
+      if (externalCallActiveRef.current) {
+        throw new Error("Call active on another device")
+      }
+
       if (callState.status !== "idle") {
         throw new Error("Already in a call")
       }
@@ -685,6 +935,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
           error: null,
           startedAt: null,
           safetyNumber: null,
+          suppressNotifications: false,
         })
 
         // Get user media (video is optional - falls back to audio only)
@@ -751,6 +1002,26 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
     [callState.status, getUserMediaWithOptionalVideo, addLocalStream, createOffer, sendCallMessage, closeWebRTC, sendPendingIceCandidates]
   )
 
+  const sendSessionClaimToSelf = useCallback(
+    async (action: "session_accepted" | "session_declined") => {
+      const selfHandle = user?.handle
+      if (!selfHandle || !publicTransportKey) {
+        return
+      }
+      const callId = callStateRef.current.callId
+      const callType = callStateRef.current.callType ?? "AUDIO"
+      if (!callId) {
+        return
+      }
+      try {
+        await sendCallMessage(selfHandle, publicTransportKey, action, callId, callType)
+      } catch {
+        // Best effort
+      }
+    },
+    [publicTransportKey, sendCallMessage, user?.handle]
+  )
+
   const answerCall = useCallback(async () => {
     logCall("info", "Answering call", { callId: callState.callId, status: callState.status })
 
@@ -758,6 +1029,9 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
       logCall("warn", "Cannot answer: invalid state")
       return
     }
+
+    emitSessionClaim("accepted")
+    void sendSessionClaimToSelf("session_accepted")
 
     const pending = pendingOfferRef.current
     if (!pending || pending.offer.type !== "offer") {
@@ -859,7 +1133,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
         error: errorMessage,
       }))
     }
-  }, [callState, getUserMediaWithOptionalVideo, addLocalStream, createAnswer, sendCallMessage, closeWebRTC, sendPendingIceCandidates])
+  }, [callState, getUserMediaWithOptionalVideo, addLocalStream, createAnswer, sendCallMessage, closeWebRTC, sendPendingIceCandidates, emitSessionClaim, sendSessionClaimToSelf])
 
   const rejectCall = useCallback(
     async (reason?: string) => {
@@ -869,6 +1143,9 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
         logCall("warn", "Cannot reject: invalid state")
         return
       }
+
+      emitSessionClaim("declined")
+      void sendSessionClaimToSelf("session_declined")
 
       // Look up peer's transport key from directory if not already set
       let peerTransportKey = callState.peerPublicKey
@@ -901,7 +1178,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
       pendingIceCandidatesRef.current = []
       setCallState(initialCallState)
     },
-    [callState, sendCallMessage]
+    [callState, sendCallMessage, emitSessionClaim, sendSessionClaimToSelf]
   )
 
   const endCall = useCallback(
@@ -957,6 +1234,15 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
     },
     [callState, sendCallMessage, closeWebRTC]
   )
+
+  const silenceIncomingCall = useCallback(() => {
+    if (callStateRef.current.status !== "incoming") {
+      return
+    }
+    pendingOfferRef.current = null
+    pendingIceCandidatesRef.current = []
+    setCallState({ ...initialCallState, suppressNotifications: true })
+  }, [])
 
   const toggleMute = useCallback(() => {
     setIsMuted((prev) => {
@@ -1027,6 +1313,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
 
   const value: CallContextValue = {
     callState,
+    externalCallActive,
     localStream,
     remoteStream,
     remoteStreamVersion,
@@ -1046,6 +1333,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
     toggleScreenShare,
     toggleReadabilityMode,
     handleCallMessage,
+    silenceIncomingCall,
   }
 
   return <CallContext.Provider value={value}>{children}</CallContext.Provider>

@@ -19,6 +19,7 @@ type IncomingCallDialogProps = {
   callType: CallType
   onAccept: () => void
   onReject: () => void
+  onSilence?: () => void
 }
 
 export function IncomingCallDialog({
@@ -27,6 +28,7 @@ export function IncomingCallDialog({
   callType,
   onAccept,
   onReject,
+  onSilence,
 }: IncomingCallDialogProps) {
   const username = callerHandle.split("@")[0]
   const initials = username.slice(0, 2).toUpperCase()
@@ -39,7 +41,14 @@ export function IncomingCallDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={() => {}}>
+    <Dialog
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen && onSilence) {
+          onSilence()
+        }
+      }}
+    >
       <DialogContent
         className="sm:max-w-sm !z-[10000]"
         overlayClassName="!z-[9999]"

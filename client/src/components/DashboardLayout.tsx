@@ -93,7 +93,7 @@ export function DashboardLayout() {
   const { theme } = useTheme()
   const socket = useSocket()
   const { settings } = useSettings()
-  const { initiateCall, callState, handleCallMessage } = useCall()
+  const { initiateCall, callState, handleCallMessage, externalCallActive } = useCall()
   const { lastSync, runSync, summaries, summariesLoaded } = useRatchetSync({
     onCallMessage: handleCallMessage,
   })
@@ -1348,6 +1348,9 @@ export function DashboardLayout() {
     }
 
     if (prev?.status === "incoming" && callState.status === "idle") {
+      if (callState.suppressNotifications) {
+        return
+      }
       void addCallEventMessage({
         peerHandle,
         callType,
@@ -2333,7 +2336,7 @@ export function DashboardLayout() {
           onExportChat={handleExportChat}
           onDeleteChat={handleDeleteChat}
           onStartCall={handleStartCall}
-          isCallDisabled={callState.status !== "idle"}
+          isCallDisabled={callState.status !== "idle" || externalCallActive}
         />
 
         <div

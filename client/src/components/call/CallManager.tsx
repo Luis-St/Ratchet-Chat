@@ -22,6 +22,7 @@ export function CallManager() {
     answerCall,
     rejectCall,
     endCall,
+    silenceIncomingCall,
     toggleMute,
     toggleCamera,
     toggleScreenShare,
@@ -86,6 +87,7 @@ export function CallManager() {
         callType={callState.callType}
         onAccept={answerCall}
         onReject={() => rejectCall()}
+        onSilence={silenceIncomingCall}
       />
 
       {/* Active call overlay */}

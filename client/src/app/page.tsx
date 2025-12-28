@@ -3,10 +3,9 @@
 import { AuthScreen } from "@/components/auth/AuthScreen"
 import { DashboardLayout } from "@/components/DashboardLayout"
 import { useAuth } from "@/context/AuthContext"
-import { SocketProvider } from "@/context/SocketContext"
 
 export default function Home() {
-  const { status, token, logout } = useAuth()
+  const { status } = useAuth()
 
   if (status === "loading") {
     return (
@@ -20,9 +19,5 @@ export default function Home() {
     return <AuthScreen />
   }
 
-  return (
-    <SocketProvider token={token} onSessionInvalidated={logout}>
-      <DashboardLayout />
-    </SocketProvider>
-  )
+  return <DashboardLayout />
 }

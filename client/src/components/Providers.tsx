@@ -1,7 +1,8 @@
 "use client"
 
 import * as React from "react"
-import { AuthProvider } from "@/context/AuthContext"
+import { AuthProvider, useAuth } from "@/context/AuthContext"
+import { SocketProvider } from "@/context/SocketContext"
 import { CallProvider } from "@/context/CallContext"
 import { SettingsProvider } from "@/context/SettingsContext"
 import { CallManager } from "@/components/call"
@@ -9,12 +10,30 @@ import { CallManager } from "@/components/call"
 export function Providers({ children }: { children: React.ReactNode }) {
   return (
     <AuthProvider>
-      <SettingsProvider>
-        <CallProvider>
-          {children}
-          <CallManager />
-        </CallProvider>
-      </SettingsProvider>
+      <ProvidersWithAuth>{children}</ProvidersWithAuth>
     </AuthProvider>
+  )
+}
+
+function ProvidersWithAuth({ children }: { children: React.ReactNode }) {
+  const { status, token, logout } = useAuth()
+
+  const content = (
+    <CallProvider>
+      {children}
+      <CallManager />
+    </CallProvider>
+  )
+
+  return (
+    <SettingsProvider>
+      {status === "authenticated" ? (
+        <SocketProvider token={token} onSessionInvalidated={logout}>
+          {content}
+        </SocketProvider>
+      ) : (
+        content
+      )}
+    </SettingsProvider>
   )
 }

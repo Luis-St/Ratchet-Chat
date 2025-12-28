@@ -187,6 +187,38 @@ io.on("connection", (socket) => {
     }
   });
 
+  socket.on("CALL_SESSION_UPDATE", (data) => {
+    const user = socket.data.user as AuthenticatedUser | undefined;
+    if (!user?.id) return;
+    if (!data || typeof data !== "object") return;
+
+    const status = (data as { status?: string }).status;
+    if (status !== "active" && status !== "idle") return;
+
+    io.to(user.id).emit("CALL_SESSION_UPDATE", {
+      status,
+      call_id: (data as { call_id?: string | null }).call_id ?? null,
+      peer_handle: (data as { peer_handle?: string | null }).peer_handle ?? null,
+      origin: socket.id,
+    });
+  });
+
+  socket.on("CALL_SESSION_CLAIMED", (data) => {
+    const user = socket.data.user as AuthenticatedUser | undefined;
+    if (!user?.id) return;
+    if (!data || typeof data !== "object") return;
+
+    const action = (data as { action?: string }).action;
+    if (action !== "accepted" && action !== "declined") return;
+
+    io.to(user.id).emit("CALL_SESSION_CLAIMED", {
+      action,
+      call_id: (data as { call_id?: string | null }).call_id ?? null,
+      peer_handle: (data as { peer_handle?: string | null }).peer_handle ?? null,
+      origin: socket.id,
+    });
+  });
+
   socket.on("error", (error) => {
     console.error(`[SocketIO] Socket error`, { userId: user.id, socketId: socket.id, error: String(error) });
   });
