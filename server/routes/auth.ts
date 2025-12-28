@@ -259,6 +259,45 @@ export const createAuthRouter = (prisma: PrismaClient, io?: SocketIOServer) => {
     });
   });
 
+  // Encrypted block list endpoints (minimal metadata - server only sees encrypted blob)
+  router.get("/block-list", authenticateToken, async (req: Request, res: Response) => {
+    if (!req.user) return res.status(401).json({ error: "Unauthorized" });
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.id },
+      select: { encrypted_block_list: true, encrypted_block_list_iv: true },
+    });
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    // Return null if no block list exists
+    if (!user.encrypted_block_list || !user.encrypted_block_list_iv) {
+      return res.json({ ciphertext: null, iv: null });
+    }
+
+    return res.json({
+      ciphertext: user.encrypted_block_list,
+      iv: user.encrypted_block_list_iv,
+    });
+  });
+
+  router.put("/block-list", authenticateToken, async (req: Request, res: Response) => {
+    if (!req.user) return res.status(401).json({ error: "Unauthorized" });
+
+    const { ciphertext, iv } = req.body;
+    if (typeof ciphertext !== "string" || typeof iv !== "string") {
+      return res.status(400).json({ error: "Invalid request: ciphertext and iv required" });
+    }
+
+    await prisma.user.update({
+      where: { id: req.user.id },
+      data: {
+        encrypted_block_list: ciphertext,
+        encrypted_block_list_iv: iv,
+      },
+    });
+
+    return res.json({ success: true });
+  });
+
   router.patch("/keys/transport", authenticateToken, async (req: Request, res: Response) => {
     if (!req.user) return res.status(401).json({ error: "Unauthorized" });
     const parsed = rotateTransportKeySchema.safeParse(req.body);

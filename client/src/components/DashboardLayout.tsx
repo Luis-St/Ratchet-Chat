@@ -3,7 +3,7 @@
 import * as React from "react"
 import { createPortal } from "react-dom"
 import EmojiPicker, { Theme } from "emoji-picker-react"
-import { ShieldCheck } from "lucide-react"
+import { Ban, ShieldCheck, ShieldOff } from "lucide-react"
 import { useTheme } from "next-themes"
 
 import { AppSidebar, type ConversationPreview } from "@/components/app-sidebar"
@@ -13,7 +13,17 @@ import {
   SidebarProvider,
 } from "@/components/ui/sidebar"
 import { TooltipProvider } from "@/components/ui/tooltip"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import { Button } from "@/components/ui/button"
 import { useAuth, type TransportKeyRotationPayload } from "@/context/AuthContext"
+import { useBlock } from "@/context/BlockContext"
 import { useCall } from "@/context/CallContext"
 import { useSocket } from "@/context/SocketContext"
 import { useSettings } from "@/hooks/useSettings"
@@ -94,6 +104,7 @@ export function DashboardLayout() {
   const socket = useSocket()
   const { settings } = useSettings()
   const { initiateCall, callState, handleCallMessage, externalCallActive } = useCall()
+  const { isBlocked, blockUser } = useBlock()
   const [contacts, setContacts] = React.useState<Contact[]>([])
   const [activeId, setActiveId] = React.useState<string>("")
   const [messages, setMessages] = React.useState<StoredMessage[]>([])
@@ -114,6 +125,7 @@ export function DashboardLayout() {
   const [highlightedMessageId, setHighlightedMessageId] = React.useState<string | null>(null)
   const [typingStatus, setTypingStatus] = React.useState<Record<string, boolean>>({})
   const [showRecipientInfo, setShowRecipientInfo] = React.useState(false)
+  const [showBlockConfirm, setShowBlockConfirm] = React.useState(false)
   const [attachment, setAttachment] = React.useState<{ name: string; type: string; size: number; data: string } | null>(null)
   const [previewImage, setPreviewImage] = React.useState<string | null>(null)
   const [pendingLink, setPendingLink] = React.useState<string | null>(null)
@@ -549,7 +561,9 @@ export function DashboardLayout() {
 
     if (!query) {
       // Use summaries for fast sidebar when available (no search query)
-      const list = contacts.map((contact) => {
+      // Filter out blocked users/servers
+      const visibleContacts = contacts.filter((contact) => !isBlocked(contact.handle))
+      const list = visibleContacts.map((contact) => {
         const summary = summaries.get(contact.handle)
         const isActive = contact.handle === activeId
 
@@ -607,8 +621,11 @@ export function DashboardLayout() {
 
     const results: ConversationPreview[] = []
 
+    // Filter out blocked users/servers
+    const visibleContacts = contacts.filter((contact) => !isBlocked(contact.handle))
+
     // 1. Chats matching contact name/handle
-    const matchingContacts = contacts.filter((contact) => 
+    const matchingContacts = visibleContacts.filter((contact) =>
       contact.username.toLowerCase().includes(query) ||
       contact.handle.toLowerCase().includes(query)
     )
@@ -636,7 +653,7 @@ export function DashboardLayout() {
     }
 
     // 2. Found messages
-    for (const contact of contacts) {
+    for (const contact of visibleContacts) {
       const thread = messagesByPeer.get(contact.handle) ?? []
       const matchingMessages = thread.filter((msg) => 
         msg.text.toLowerCase().includes(query)
@@ -659,7 +676,7 @@ export function DashboardLayout() {
     }
 
     return results
-  }, [contacts, messagesByPeer, activeId, sidebarSearchQuery, summaries])
+  }, [contacts, messagesByPeer, activeId, sidebarSearchQuery, summaries, isBlocked])
 
 
   const handleTyping = React.useCallback(async () => {
@@ -1212,6 +1229,19 @@ export function DashboardLayout() {
     setMessages((prev) => prev.filter((m) => !ids.includes(m.id)))
     setActiveId("")
   }, [activeContact, user, messages])
+
+  const handleBlockUser = React.useCallback(() => {
+    if (!activeContact) return
+    setShowBlockConfirm(true)
+  }, [activeContact])
+
+  const confirmBlockUser = React.useCallback(async () => {
+    if (!activeContact) return
+    await blockUser(activeContact.handle)
+    setShowBlockConfirm(false)
+    // Clear active selection since the user is now blocked
+    setActiveId("")
+  }, [activeContact, blockUser])
 
   const handleStartCall = React.useCallback(
     async (callType: "AUDIO" | "VIDEO") => {
@@ -2347,11 +2377,49 @@ export function DashboardLayout() {
         open={!!previewImage} 
         onOpenChange={(open) => !open && setPreviewImage(null)} 
       />
-      <LinkWarningDialog 
-        url={pendingLink} 
-        open={!!pendingLink} 
-        onOpenChange={(open) => !open && setPendingLink(null)} 
+      <LinkWarningDialog
+        url={pendingLink}
+        open={!!pendingLink}
+        onOpenChange={(open) => !open && setPendingLink(null)}
       />
+
+      {/* Block User Confirmation Dialog */}
+      <Dialog open={showBlockConfirm} onOpenChange={setShowBlockConfirm}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Ban className="h-5 w-5 text-destructive" />
+              Block {activeContact?.username}?
+            </DialogTitle>
+            <DialogDescription asChild>
+              <div className="space-y-3 pt-2 text-sm text-muted-foreground">
+                <p>Blocking this user will:</p>
+                <ul className="list-disc pl-5 space-y-1">
+                  <li>Hide all their messages from your chats</li>
+                  <li>Remove them from your conversation list</li>
+                  <li>Prevent future messages from appearing</li>
+                </ul>
+                <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 dark:border-amber-900/30 dark:bg-amber-900/10">
+                  <ShieldOff className="h-4 w-4 text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
+                  <span className="text-xs text-amber-700 dark:text-amber-300">
+                    Your block list is encrypted. The server cannot see who you&apos;ve blocked.
+                  </span>
+                </div>
+              </div>
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button variant="outline" onClick={() => setShowBlockConfirm(false)}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={confirmBlockUser}>
+              <Ban className="h-4 w-4 mr-2" />
+              Block User
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <AppSidebar
         conversations={conversations}
         activeId={activeContact?.handle ?? ""}
@@ -2385,6 +2453,7 @@ export function DashboardLayout() {
           onShowRecipientInfo={() => setShowRecipientInfo(true)}
           onExportChat={handleExportChat}
           onDeleteChat={handleDeleteChat}
+          onBlockUser={handleBlockUser}
           onStartCall={handleStartCall}
           isCallDisabled={callState.status !== "idle" || externalCallActive}
         />

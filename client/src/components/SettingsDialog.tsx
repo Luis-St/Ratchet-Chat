@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { Copy, Eye, EyeOff, Fingerprint, Key, Lock, LogOut, Monitor, Plus, Shield, Trash2 } from "lucide-react"
+import { Ban, Copy, Eye, EyeOff, Fingerprint, Key, Lock, LogOut, Monitor, Plus, Server, Shield, Trash2, User } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
@@ -16,6 +16,7 @@ import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { useAuth, type SessionInfo, type PasskeyInfo } from "@/context/AuthContext"
+import { useBlock } from "@/context/BlockContext"
 import { useCall } from "@/context/CallContext"
 import { useSettings } from "@/hooks/useSettings"
 import { Badge } from "@/components/ui/badge"
@@ -72,6 +73,7 @@ export function SettingsDialog({
   onOpenChange: (open: boolean) => void
 }) {
   const { user, publicIdentityKey, deleteAccount, fetchSessions, invalidateSession, invalidateAllOtherSessions, rotateTransportKey, getTransportKeyRotatedAt, fetchPasskeys, addPasskey, removePasskey } = useAuth()
+  const { blockedUsers, blockedServers, blockUser, unblockUser, blockServer, unblockServer } = useBlock()
   const { callState } = useCall()
   const { settings, updateSettings } = useSettings()
   const isInActiveCall = callState.status !== "idle" && callState.status !== "ended"
@@ -96,6 +98,11 @@ export function SettingsDialog({
   const [removingPasskeyId, setRemovingPasskeyId] = React.useState<string | null>(null)
   const [passkeyError, setPasskeyError] = React.useState<string | null>(null)
   const [newPasskeyName, setNewPasskeyName] = React.useState("")
+
+  // Block list state
+  const [newBlockedUser, setNewBlockedUser] = React.useState("")
+  const [newBlockedServer, setNewBlockedServer] = React.useState("")
+  const [blockError, setBlockError] = React.useState<string | null>(null)
 
   const identityKey = publicIdentityKey ?? ""
   const identityKeyPreview = formatKeyPreview(identityKey)
@@ -202,8 +209,49 @@ export function SettingsDialog({
       setRotateTransportError(null)
       setPasskeyError(null)
       setNewPasskeyName("")
+      setNewBlockedUser("")
+      setNewBlockedServer("")
+      setBlockError(null)
     }
   }, [open])
+
+  const handleBlockUser = React.useCallback(async () => {
+    const handle = newBlockedUser.trim().toLowerCase()
+    if (!handle) {
+      setBlockError("Enter a user handle")
+      return
+    }
+    if (!handle.includes("@")) {
+      setBlockError("Enter a full handle like user@server.com")
+      return
+    }
+    setBlockError(null)
+    try {
+      await blockUser(handle)
+      setNewBlockedUser("")
+    } catch (error) {
+      setBlockError(error instanceof Error ? error.message : "Unable to block user")
+    }
+  }, [blockUser, newBlockedUser])
+
+  const handleBlockServer = React.useCallback(async () => {
+    const server = newBlockedServer.trim().toLowerCase()
+    if (!server) {
+      setBlockError("Enter a server address")
+      return
+    }
+    if (server.includes("@")) {
+      setBlockError("Enter just the server address without @")
+      return
+    }
+    setBlockError(null)
+    try {
+      await blockServer(server)
+      setNewBlockedServer("")
+    } catch (error) {
+      setBlockError(error instanceof Error ? error.message : "Unable to block server")
+    }
+  }, [blockServer, newBlockedServer])
 
   const handleInvalidateSession = React.useCallback(async (sessionId: string) => {
     setInvalidatingSessionId(sessionId)
@@ -293,8 +341,9 @@ export function SettingsDialog({
         </DialogHeader>
         <Tabs defaultValue="privacy" className="w-full flex-1 min-h-0 flex flex-col">
           <div className="sticky top-0 z-10 bg-background">
-            <TabsList className="grid w-full grid-cols-2 sm:grid-cols-4 h-auto p-1">
+            <TabsList className="grid w-full grid-cols-3 sm:grid-cols-5 h-auto p-1">
               <TabsTrigger value="privacy">Privacy</TabsTrigger>
+              <TabsTrigger value="blocked">Blocked</TabsTrigger>
               <TabsTrigger value="passkeys">Passkeys</TabsTrigger>
               <TabsTrigger value="sessions">Sessions</TabsTrigger>
               <TabsTrigger value="security">Security</TabsTrigger>
@@ -334,6 +383,124 @@ export function SettingsDialog({
                 }
               />
             </div>
+            </TabsContent>
+
+            <TabsContent value="blocked" className="space-y-6 py-4">
+              {/* Blocked Users Section */}
+              <div className="space-y-3">
+                <div className="space-y-1">
+                  <h3 className="text-sm font-medium flex items-center gap-2">
+                    <User className="h-4 w-4" />
+                    Blocked Users
+                  </h3>
+                  <p className="text-xs text-muted-foreground">
+                    Messages from blocked users won&apos;t appear in your chats.
+                  </p>
+                </div>
+
+                {blockedUsers.length === 0 ? (
+                  <p className="text-sm text-muted-foreground italic">No blocked users</p>
+                ) : (
+                  <div className="space-y-2 max-h-[150px] overflow-y-auto">
+                    {blockedUsers.map((handle) => (
+                      <div
+                        key={handle}
+                        className="flex items-center justify-between rounded-lg border p-2"
+                      >
+                        <span className="text-sm font-mono">{handle}</span>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                          onClick={() => unblockUser(handle)}
+                          title="Unblock user"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <div className="flex gap-2">
+                  <Input
+                    value={newBlockedUser}
+                    onChange={(e) => setNewBlockedUser(e.target.value)}
+                    placeholder="user@server.com"
+                    className="flex-1"
+                    onKeyDown={(e) => e.key === "Enter" && handleBlockUser()}
+                  />
+                  <Button variant="outline" size="sm" onClick={handleBlockUser}>
+                    <Ban className="h-4 w-4 mr-1" />
+                    Block
+                  </Button>
+                </div>
+              </div>
+
+              {/* Blocked Servers Section */}
+              <div className="space-y-3">
+                <div className="space-y-1">
+                  <h3 className="text-sm font-medium flex items-center gap-2">
+                    <Server className="h-4 w-4" />
+                    Blocked Servers
+                  </h3>
+                  <p className="text-xs text-muted-foreground">
+                    All users from blocked servers won&apos;t appear in your chats.
+                  </p>
+                </div>
+
+                {blockedServers.length === 0 ? (
+                  <p className="text-sm text-muted-foreground italic">No blocked servers</p>
+                ) : (
+                  <div className="space-y-2 max-h-[150px] overflow-y-auto">
+                    {blockedServers.map((server) => (
+                      <div
+                        key={server}
+                        className="flex items-center justify-between rounded-lg border p-2"
+                      >
+                        <span className="text-sm font-mono">@{server}</span>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                          onClick={() => unblockServer(server)}
+                          title="Unblock server"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <div className="flex gap-2">
+                  <Input
+                    value={newBlockedServer}
+                    onChange={(e) => setNewBlockedServer(e.target.value)}
+                    placeholder="server.com"
+                    className="flex-1"
+                    onKeyDown={(e) => e.key === "Enter" && handleBlockServer()}
+                  />
+                  <Button variant="outline" size="sm" onClick={handleBlockServer}>
+                    <Ban className="h-4 w-4 mr-1" />
+                    Block
+                  </Button>
+                </div>
+              </div>
+
+              {blockError ? (
+                <p className="text-sm text-destructive">{blockError}</p>
+              ) : null}
+
+              <div className="flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 p-3 dark:border-amber-900/30 dark:bg-amber-900/10">
+                <Shield className="mt-0.5 h-4 w-4 text-amber-600 dark:text-amber-400" />
+                <div className="space-y-1">
+                  <p className="text-xs font-medium text-amber-900 dark:text-amber-100">Encrypted Block List</p>
+                  <p className="text-[10px] text-amber-700 dark:text-amber-300">
+                    Your block list is encrypted locally. The server cannot see who you&apos;ve blocked.
+                  </p>
+                </div>
+              </div>
             </TabsContent>
 
             <TabsContent value="sessions" className="space-y-6 py-4">

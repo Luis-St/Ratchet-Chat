@@ -1,0 +1,204 @@
+"use client"
+
+import * as React from "react"
+import { db } from "@/lib/db"
+import { encryptString, decryptString, type EncryptedPayload } from "@/lib/crypto"
+import { apiFetch } from "@/lib/api"
+import { useAuth } from "./AuthContext"
+
+type BlockList = {
+  users: string[] // Full handles like "alice@server.com"
+  servers: string[] // Server hostnames like "server.com"
+}
+
+type BlockContextValue = {
+  blockedUsers: string[]
+  blockedServers: string[]
+  isBlocked: (handle: string) => boolean
+  blockUser: (handle: string) => Promise<void>
+  unblockUser: (handle: string) => Promise<void>
+  blockServer: (server: string) => Promise<void>
+  unblockServer: (server: string) => Promise<void>
+  isLoading: boolean
+}
+
+const BLOCK_LIST_KEY = "encryptedBlockList"
+
+const BlockContext = React.createContext<BlockContextValue | undefined>(undefined)
+
+export function BlockProvider({ children }: { children: React.ReactNode }) {
+  const { status, masterKey } = useAuth()
+  const [blockedUsers, setBlockedUsers] = React.useState<string[]>([])
+  const [blockedServers, setBlockedServers] = React.useState<string[]>([])
+  const [isLoading, setIsLoading] = React.useState(true)
+
+  // Load block list: try server first, fall back to local cache
+  React.useEffect(() => {
+    if (status !== "authenticated" || !masterKey) {
+      setBlockedUsers([])
+      setBlockedServers([])
+      setIsLoading(false)
+      return
+    }
+
+    async function loadBlockList() {
+      try {
+        // Try to load from server first
+        const serverData = await apiFetch<{ ciphertext: string | null; iv: string | null }>(
+          "/auth/block-list"
+        ).catch(() => null)
+
+        let encrypted: EncryptedPayload | null = null
+
+        if (serverData?.ciphertext && serverData?.iv) {
+          // Use server data
+          encrypted = { ciphertext: serverData.ciphertext, iv: serverData.iv }
+          // Update local cache
+          await db.syncState.put({ key: BLOCK_LIST_KEY, value: encrypted })
+        } else {
+          // Fall back to local cache
+          const record = await db.syncState.get(BLOCK_LIST_KEY)
+          if (record?.value) {
+            encrypted = record.value as EncryptedPayload
+          }
+        }
+
+        if (encrypted) {
+          const decrypted = await decryptString(masterKey!, encrypted)
+          const blockList = JSON.parse(decrypted) as BlockList
+          setBlockedUsers(blockList.users ?? [])
+          setBlockedServers(blockList.servers ?? [])
+        }
+      } catch (error) {
+        console.error("Failed to load block list:", error)
+      } finally {
+        setIsLoading(false)
+      }
+    }
+
+    void loadBlockList()
+  }, [status, masterKey])
+
+  // Save encrypted block list to both local and server
+  const saveBlockList = React.useCallback(
+    async (users: string[], servers: string[]) => {
+      if (!masterKey) return
+
+      const blockList: BlockList = { users, servers }
+      const encrypted = await encryptString(masterKey, JSON.stringify(blockList))
+
+      // Save to local cache
+      await db.syncState.put({
+        key: BLOCK_LIST_KEY,
+        value: encrypted,
+      })
+
+      // Sync to server (fire and forget, don't block UI)
+      apiFetch("/auth/block-list", {
+        method: "PUT",
+        body: encrypted,
+      }).catch((error) => {
+        console.error("Failed to sync block list to server:", error)
+      })
+    },
+    [masterKey]
+  )
+
+  // Check if a handle is blocked (either directly or via server)
+  const isBlocked = React.useCallback(
+    (handle: string): boolean => {
+      if (blockedUsers.includes(handle.toLowerCase())) {
+        return true
+      }
+
+      // Extract server from handle (e.g., "alice@server.com" -> "server.com")
+      const atIndex = handle.lastIndexOf("@")
+      if (atIndex !== -1) {
+        const server = handle.slice(atIndex + 1).toLowerCase()
+        if (blockedServers.includes(server)) {
+          return true
+        }
+      }
+
+      return false
+    },
+    [blockedUsers, blockedServers]
+  )
+
+  const blockUser = React.useCallback(
+    async (handle: string) => {
+      const normalizedHandle = handle.toLowerCase()
+      if (blockedUsers.includes(normalizedHandle)) return
+
+      const newUsers = [...blockedUsers, normalizedHandle]
+      setBlockedUsers(newUsers)
+      await saveBlockList(newUsers, blockedServers)
+    },
+    [blockedUsers, blockedServers, saveBlockList]
+  )
+
+  const unblockUser = React.useCallback(
+    async (handle: string) => {
+      const normalizedHandle = handle.toLowerCase()
+      const newUsers = blockedUsers.filter((u) => u !== normalizedHandle)
+      setBlockedUsers(newUsers)
+      await saveBlockList(newUsers, blockedServers)
+    },
+    [blockedUsers, blockedServers, saveBlockList]
+  )
+
+  const blockServer = React.useCallback(
+    async (server: string) => {
+      const normalizedServer = server.toLowerCase()
+      if (blockedServers.includes(normalizedServer)) return
+
+      const newServers = [...blockedServers, normalizedServer]
+      setBlockedServers(newServers)
+      await saveBlockList(blockedUsers, newServers)
+    },
+    [blockedUsers, blockedServers, saveBlockList]
+  )
+
+  const unblockServer = React.useCallback(
+    async (server: string) => {
+      const normalizedServer = server.toLowerCase()
+      const newServers = blockedServers.filter((s) => s !== normalizedServer)
+      setBlockedServers(newServers)
+      await saveBlockList(blockedUsers, newServers)
+    },
+    [blockedUsers, blockedServers, saveBlockList]
+  )
+
+  const value = React.useMemo(
+    (): BlockContextValue => ({
+      blockedUsers,
+      blockedServers,
+      isBlocked,
+      blockUser,
+      unblockUser,
+      blockServer,
+      unblockServer,
+      isLoading,
+    }),
+    [
+      blockedUsers,
+      blockedServers,
+      isBlocked,
+      blockUser,
+      unblockUser,
+      blockServer,
+      unblockServer,
+      isLoading,
+    ]
+  )
+
+  return <BlockContext.Provider value={value}>{children}</BlockContext.Provider>
+}
+
+export function useBlock(): BlockContextValue {
+  const context = React.useContext(BlockContext)
+  if (!context) {
+    throw new Error("useBlock must be used within BlockProvider")
+  }
+  return context
+}

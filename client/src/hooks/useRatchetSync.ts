@@ -3,6 +3,7 @@
 import * as React from "react"
 import { io } from "socket.io-client"
 import { useAuth } from "@/context/AuthContext"
+import { useBlock } from "@/context/BlockContext"
 import { useSettings } from "@/hooks/useSettings"
 import { apiFetch, getAuthToken } from "@/lib/api"
 import { CONTACT_TRANSPORT_KEY_UPDATED_EVENT } from "@/lib/events"
@@ -178,6 +179,7 @@ export function useRatchetSync(options: UseRatchetSyncOptions = {}) {
     publicIdentityKey,
     user,
   } = useAuth()
+  const { isBlocked } = useBlock()
   const { settings } = useSettings()
   const isSyncingRef = React.useRef(false)
   const directoryCacheRef = React.useRef(new Map<string, DirectoryEntry>())
@@ -334,6 +336,16 @@ export function useRatchetSync(options: UseRatchetSyncOptions = {}) {
   const processSingleQueueItem = React.useCallback(
     async (item: QueueItem) => {
       if (!masterKey || !transportPrivateKey) {
+        return
+      }
+
+      // Check if sender is blocked - if so, ACK and discard without processing
+      if (item.sender_handle && isBlocked(item.sender_handle)) {
+        try {
+          await apiFetch(`/messages/queue/${item.id}/ack`, { method: "POST" })
+        } catch {
+          // Best-effort ACK
+        }
         return
       }
 
@@ -857,6 +869,7 @@ export function useRatchetSync(options: UseRatchetSyncOptions = {}) {
       updateMessageTimestamps,
       onCallMessage,
       bumpLastSync,
+      isBlocked,
     ]
   )
 
@@ -1342,6 +1355,10 @@ export function useRatchetSync(options: UseRatchetSyncOptions = {}) {
       if (!payload?.id || !payload?.encrypted_blob || !payload?.iv) {
         return
       }
+      // Ignore messages from blocked users
+      if (payload.original_sender_handle && isBlocked(payload.original_sender_handle)) {
+        return
+      }
       // Deduplication check
       if (processedIdsRef.current.has(payload.id)) {
         return
@@ -1428,6 +1445,7 @@ export function useRatchetSync(options: UseRatchetSyncOptions = {}) {
     processSingleQueueItem,
     bumpLastSync,
     onVaultMessageSynced,
+    isBlocked,
   ])
 
   return { processQueue, syncVault, runSync, lastSync, summaries, summariesLoaded, fetchSummaries }

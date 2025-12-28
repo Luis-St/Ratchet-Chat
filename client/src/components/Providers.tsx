@@ -2,6 +2,7 @@
 
 import * as React from "react"
 import { AuthProvider, useAuth } from "@/context/AuthContext"
+import { BlockProvider } from "@/context/BlockContext"
 import { SocketProvider } from "@/context/SocketContext"
 import { CallProvider } from "@/context/CallContext"
 import { SettingsProvider } from "@/context/SettingsContext"
@@ -27,13 +28,15 @@ function ProvidersWithAuth({ children }: { children: React.ReactNode }) {
 
   return (
     <SettingsProvider>
-      {status === "authenticated" ? (
-        <SocketProvider token={token} onSessionInvalidated={logout}>
-          {content}
-        </SocketProvider>
-      ) : (
-        content
-      )}
+      <BlockProvider>
+        {status === "authenticated" ? (
+          <SocketProvider token={token} onSessionInvalidated={logout}>
+            {content}
+          </SocketProvider>
+        ) : (
+          content
+        )}
+      </BlockProvider>
     </SettingsProvider>
   )
 }

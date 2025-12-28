@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { Download, MoreVertical, Phone, Search, Trash2, Video } from "lucide-react"
+import { Ban, Download, MoreVertical, Phone, Search, Trash2, Video } from "lucide-react"
 
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
@@ -26,6 +26,7 @@ type ChatHeaderProps = {
   onShowRecipientInfo: () => void
   onExportChat: () => void
   onDeleteChat: () => void
+  onBlockUser: () => void
   onStartCall?: (type: "AUDIO" | "VIDEO") => void
   isCallDisabled?: boolean
 }
@@ -41,6 +42,7 @@ export function ChatHeader({
   onShowRecipientInfo,
   onExportChat,
   onDeleteChat,
+  onBlockUser,
   onStartCall,
   isCallDisabled = false,
 }: ChatHeaderProps) {
@@ -141,6 +143,13 @@ export function ChatHeader({
             <DropdownMenuItem onClick={onExportChat}>
               <Download className="mr-2 h-4 w-4" />
               <span>Export Chat</span>
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={onBlockUser}
+              className="text-destructive focus:text-destructive"
+            >
+              <Ban className="mr-2 h-4 w-4" />
+              <span>Block User</span>
             </DropdownMenuItem>
             <DropdownMenuItem
               onClick={onDeleteChat}
