@@ -68,6 +68,10 @@ docker compose -f docker-compose.prod.yml up --build -d
 Federation signing keys are stored in a `.cert` file (env format) and loaded
 automatically on server startup.
 
+# OPAQUE Keys
+
+OPAQUE Server Crednetials are stored in `.opaque` file and loaded automatically on server startup.
+
 ## Configuration
 
 See `.env.example` for all required settings.

@@ -31,3 +31,5 @@ Blocking calls from unknowns
 ## Account mirroring to other servers (message backup style)
 
 ## Native app (?)
+
+# work out a proper versioning system
