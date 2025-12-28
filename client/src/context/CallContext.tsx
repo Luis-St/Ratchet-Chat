@@ -180,6 +180,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
   const lastInboundAudioRef = useRef<{ energy: number; duration: number } | null>(null)
   const lastOutboundAudioRef = useRef<{ energy: number; duration: number } | null>(null)
   const pendingIceCandidatesRef = useRef<RTCIceCandidate[]>([])
+  const selfSessionClaimsRef = useRef<Set<string>>(new Set())
 
   const clearIncomingForExternalCall = useCallback(() => {
     if (callStateRef.current.status !== "incoming") {
@@ -640,6 +641,10 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
         payload.call_action === "session_accepted" ||
         payload.call_action === "session_declined"
       ) {
+        if (senderHandle === user?.handle && selfSessionClaimsRef.current.has(payload.call_id)) {
+          selfSessionClaimsRef.current.delete(payload.call_id)
+          return
+        }
         clearIncomingForExternalCall()
         if (payload.call_action === "session_accepted") {
           externalCallActiveRef.current = true
@@ -843,7 +848,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
           break
       }
     },
-    [handleAnswer, addIceCandidate, closeWebRTC, sendCallMessage]
+    [handleAnswer, addIceCandidate, clearIncomingForExternalCall, closeWebRTC, sendCallMessage, user?.handle]
   )
 
   // Audio level monitoring
@@ -1039,8 +1044,10 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
         return
       }
       try {
+        selfSessionClaimsRef.current.add(callId)
         await sendCallMessage(selfHandle, publicTransportKey, action, callId, callType)
       } catch {
+        selfSessionClaimsRef.current.delete(callId)
         // Best effort
       }
     },
