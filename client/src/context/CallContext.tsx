@@ -441,6 +441,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
     } else if (state === "failed") {
       // Failed is permanent - end immediately
       if (callStateRef.current.status === "connected") {
+        resetWebRTCState("connection-failed")
         setCallState((prev) => ({
           ...prev,
           status: "ended",
@@ -454,6 +455,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
         disconnectTimeoutRef.current = setTimeout(() => {
           // Only end if still disconnected after timeout
           if (callStateRef.current.status === "connected") {
+            resetWebRTCState("connection-lost")
             setCallState((prev) => ({
               ...prev,
               status: "ended",
@@ -463,7 +465,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
         }, 15000) // 15 second grace period for reconnection
       }
     }
-  }, [])
+  }, [resetWebRTCState])
 
   const isRenegotiatingRef = useRef(false)
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null)
@@ -544,6 +546,20 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
     },
     onNegotiationNeeded: handleNegotiationNeeded,
   })
+
+  const resetWebRTCState = useCallback((reason: string) => {
+    logCall("info", "Resetting WebRTC state", { reason })
+    pendingIceCandidatesRef.current = []
+    isRenegotiatingRef.current = false
+    closeWebRTC()
+    setLocalStream(null)
+    setRemoteStream(null)
+  }, [closeWebRTC])
+
+  const cleanupAfterCall = useCallback((reason: string) => {
+    pendingOfferRef.current = null
+    resetWebRTCState(reason)
+  }, [resetWebRTCState])
 
   // Keep refs updated for use in callbacks
   useEffect(() => {
@@ -812,6 +828,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
             } catch (error) {
               logCall("warn", "Failed to handle answer", { error: String(error) })
               toast.error("Call failed", { description: "Failed to establish connection" })
+              cleanupAfterCall("answer-failed")
               setCallState((prev) => ({
                 ...prev,
                 status: "ended",
@@ -841,9 +858,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
             clearTimeout(timeoutRef.current)
             timeoutRef.current = null
           }
-          closeWebRTC()
-          setLocalStream(null)
-          setRemoteStream(null)
+          cleanupAfterCall(`peer-${payload.call_action}`)
           setCallState((prev) => ({
             ...initialCallState,
             status: "ended",
@@ -859,9 +874,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
             clearTimeout(timeoutRef.current)
             timeoutRef.current = null
           }
-          closeWebRTC()
-          setLocalStream(null)
-          setRemoteStream(null)
+          cleanupAfterCall("peer-ended")
           setCallState((prev) => ({
             ...initialCallState,
             status: "ended",
@@ -871,7 +884,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
           break
       }
     },
-    [handleAnswer, addIceCandidate, clearIncomingForExternalCall, closeWebRTC, sendCallMessage, user?.handle]
+    [handleAnswer, addIceCandidate, clearIncomingForExternalCall, cleanupAfterCall, sendCallMessage, user?.handle]
   )
 
   // Audio level monitoring
@@ -977,6 +990,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
       const callId = crypto.randomUUID()
 
       try {
+        resetWebRTCState("new-outgoing-call")
         setCallState({
           status: "initiating",
           callId,
@@ -1018,9 +1032,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
               // Ignore errors sending end
             }
 
-            closeWebRTC()
-            setLocalStream(null)
-            setRemoteStream(null)
+            cleanupAfterCall("outgoing-timeout")
             setCallState((prev) => ({
               ...initialCallState,
               status: "ended",
@@ -1041,8 +1053,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
           clearTimeout(timeoutRef.current)
           timeoutRef.current = null
         }
-        closeWebRTC()
-        setLocalStream(null)
+        cleanupAfterCall("initiate-failed")
         setCallState((prev) => ({
           ...initialCallState,
           status: "ended",
@@ -1052,7 +1063,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
         }))
       }
     },
-    [callState.status, getUserMediaWithOptionalVideo, addLocalStream, createOffer, sendCallMessage, closeWebRTC, sendPendingIceCandidates]
+    [callState.status, getUserMediaWithOptionalVideo, addLocalStream, createOffer, sendCallMessage, sendPendingIceCandidates, resetWebRTCState, cleanupAfterCall]
   )
 
   const sendSessionClaimToSelf = useCallback(
@@ -1085,11 +1096,13 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
       return
     }
 
+    resetWebRTCState("answering-call")
     emitSessionClaim("accepted")
     void sendSessionClaimToSelf("session_accepted")
 
     const pending = pendingOfferRef.current
     if (!pending || pending.offer.type !== "offer") {
+      pendingOfferRef.current = null
       setCallState((prev) => ({
         ...prev,
         status: "ended",
@@ -1114,6 +1127,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
       } catch (error) {
         logCall("warn", "Failed to fetch peer transport key", { error: String(error) })
         toast.error("Failed to answer call", { description: "Could not find caller's key" })
+        pendingOfferRef.current = null
         setCallState((prev) => ({
           ...prev,
           status: "ended",
@@ -1124,6 +1138,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
     }
 
     if (!peerTransportKey) {
+      pendingOfferRef.current = null
       setCallState((prev) => ({
         ...prev,
         status: "ended",
@@ -1180,15 +1195,14 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
         }
       }
 
-      closeWebRTC()
-      setLocalStream(null)
+      cleanupAfterCall("answer-failed")
       setCallState((prev) => ({
         ...prev,
         status: "ended",
         error: errorMessage,
       }))
     }
-  }, [callState, getUserMediaWithOptionalVideo, addLocalStream, createAnswer, sendCallMessage, closeWebRTC, sendPendingIceCandidates, emitSessionClaim, sendSessionClaimToSelf])
+  }, [callState, getUserMediaWithOptionalVideo, addLocalStream, createAnswer, sendCallMessage, sendPendingIceCandidates, emitSessionClaim, sendSessionClaimToSelf, resetWebRTCState, cleanupAfterCall])
 
   const rejectCall = useCallback(
     async (reason?: string) => {
@@ -1229,12 +1243,10 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
         }
       }
 
-      pendingOfferRef.current = null
-      pendingIceCandidatesRef.current = []
-      isRenegotiatingRef.current = false
+      cleanupAfterCall("reject-call")
       setCallState(initialCallState)
     },
-    [callState, sendCallMessage, emitSessionClaim, sendSessionClaimToSelf]
+    [callState, sendCallMessage, emitSessionClaim, sendSessionClaimToSelf, cleanupAfterCall]
   )
 
   const endCall = useCallback(
@@ -1282,11 +1294,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
         }
       }
 
-      pendingIceCandidatesRef.current = []
-      isRenegotiatingRef.current = false
-      closeWebRTC()
-      setLocalStream(null)
-      setRemoteStream(null)
+      cleanupAfterCall("local-end")
       setCallState((prev) => ({
         ...initialCallState,
         status: "ended",
@@ -1294,7 +1302,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
         callType: prev.callType,
       }))
     },
-    [callState, sendCallMessage, closeWebRTC]
+    [callState, sendCallMessage, cleanupAfterCall]
   )
 
   const silenceIncomingCall = useCallback(() => {
