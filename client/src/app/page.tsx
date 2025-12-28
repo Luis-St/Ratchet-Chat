@@ -1,6 +1,7 @@
 "use client"
 
 import { AuthScreen } from "@/components/auth/AuthScreen"
+import { LockScreen } from "@/components/auth/LockScreen"
 import { DashboardLayout } from "@/components/DashboardLayout"
 import { useAuth } from "@/context/AuthContext"
 
@@ -17,6 +18,10 @@ export default function Home() {
 
   if (status === "guest") {
     return <AuthScreen />
+  }
+
+  if (status === "locked") {
+    return <LockScreen />
   }
 
   return <DashboardLayout />

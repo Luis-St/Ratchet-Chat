@@ -8,8 +8,8 @@ datasource db {
 }
 
 model User {
-  id                         String          @id @default(uuid()) @db.Uuid
-  username                   String          @unique
+  id                         String              @id @default(uuid()) @db.Uuid
+  username                   String              @unique
   kdf_salt                   String
   kdf_iterations             Int
   opaque_password_file       Bytes?
@@ -19,12 +19,29 @@ model User {
   encrypted_identity_iv      String
   encrypted_transport_key    String
   encrypted_transport_iv     String
-  show_typing_indicator      Boolean         @default(true)
-  send_read_receipts         Boolean         @default(true)
-  created_at                 DateTime        @default(now())
-  incoming_queue             IncomingQueue[] @relation("IncomingRecipient")
-  vault_messages             MessageVault[]  @relation("VaultOwner")
-  sessions                   Session[]       @relation("UserSessions")
+  show_typing_indicator      Boolean             @default(true)
+  send_read_receipts         Boolean             @default(true)
+  created_at                 DateTime            @default(now())
+  incoming_queue             IncomingQueue[]     @relation("IncomingRecipient")
+  vault_messages             MessageVault[]      @relation("VaultOwner")
+  sessions                   Session[]           @relation("UserSessions")
+  passkeys                   PasskeyCredential[] @relation("UserPasskeys")
+}
+
+model PasskeyCredential {
+  id            String   @id @default(uuid()) @db.Uuid
+  user_id       String   @db.Uuid
+  credential_id String   @unique
+  public_key    Bytes
+  sign_count    Int      @default(0)
+  transports    String[]
+  name          String?
+  created_at    DateTime @default(now())
+  last_used_at  DateTime @default(now())
+
+  user          User     @relation("UserPasskeys", fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([user_id])
 }
 
 model Session {

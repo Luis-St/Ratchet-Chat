@@ -2,7 +2,7 @@
 
 import * as React from "react"
 import { useForm } from "react-hook-form"
-import { Lock, User } from "lucide-react"
+import { Fingerprint, Key, Lock, User } from "lucide-react"
 
 import { useAuth } from "@/context/AuthContext"
 import { getInstanceHost, normalizeHandle, splitHandle } from "@/lib/handles"
@@ -18,16 +18,20 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Label } from "@/components/ui/label"
+import { Switch } from "@/components/ui/switch"
 
-type AuthValues = {
+type RegisterValues = {
   username: string
   password: string
+  confirmPassword: string
 }
 
 export function AuthScreen() {
-  const { register: registerUser, login } = useAuth()
+  const { register: registerUser, loginWithPasskey } = useAuth()
   const [authError, setAuthError] = React.useState<string | null>(null)
   const [loading, setLoading] = React.useState<"login" | "register" | null>(null)
+  const [savePassword, setSavePassword] = React.useState(false)
   const instanceHost = getInstanceHost()
 
   const validateLocalHandle = React.useCallback(
@@ -54,45 +58,51 @@ export function AuthScreen() {
     [instanceHost]
   )
 
-  const loginForm = useForm<AuthValues>({
-    defaultValues: { username: "", password: "" },
-  })
-  const registerForm = useForm<AuthValues>({
-    defaultValues: { username: "", password: "" },
+  const registerForm = useForm<RegisterValues>({
+    defaultValues: { username: "", password: "", confirmPassword: "" },
   })
 
-  const handleLogin = React.useCallback(
-    async (values: AuthValues) => {
-      setAuthError(null)
-      setLoading("login")
-      try {
-        await login(values.username, values.password)
-      } catch (error) {
-        setAuthError(
-          error instanceof Error ? error.message : "Unable to login"
-        )
-      } finally {
-        setLoading(null)
+  const handleLogin = React.useCallback(async () => {
+    setAuthError(null)
+    setLoading("login")
+    try {
+      await loginWithPasskey()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to login"
+      // Handle user cancellation gracefully
+      if (message.includes("cancelled") || message.includes("canceled") || message.includes("abort")) {
+        setAuthError(null)
+      } else {
+        setAuthError(message)
       }
-    },
-    [login]
-  )
+    } finally {
+      setLoading(null)
+    }
+  }, [loginWithPasskey])
 
   const handleRegister = React.useCallback(
-    async (values: AuthValues) => {
+    async (values: RegisterValues) => {
       setAuthError(null)
+      if (values.password !== values.confirmPassword) {
+        setAuthError("Passwords do not match")
+        return
+      }
       setLoading("register")
       try {
-        await registerUser(values.username, values.password)
+        await registerUser(values.username, values.password, savePassword)
       } catch (error) {
-        setAuthError(
-          error instanceof Error ? error.message : "Unable to register"
-        )
+        const message = error instanceof Error ? error.message : "Unable to register"
+        // Handle user cancellation gracefully
+        if (message.includes("cancelled") || message.includes("canceled") || message.includes("abort")) {
+          setAuthError(null)
+        } else {
+          setAuthError(message)
+        }
       } finally {
         setLoading(null)
       }
     },
-    [registerUser]
+    [registerUser, savePassword]
   )
 
   return (
@@ -110,65 +120,21 @@ export function AuthScreen() {
               <TabsTrigger value="login">Login</TabsTrigger>
               <TabsTrigger value="register">Register</TabsTrigger>
             </TabsList>
-            <TabsContent value="login">
-              <Form {...loginForm}>
-                <form
-                  onSubmit={loginForm.handleSubmit(handleLogin)}
-                  className="space-y-4"
-                >
-                  <FormField
-                    control={loginForm.control}
-                    name="username"
-                    rules={{
-                      required: "Username is required",
-                      validate: validateLocalHandle,
-                    }}
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Username or handle (local)</FormLabel>
-                        <FormControl>
-                          <Input
-                            autoComplete="username"
-                            placeholder="alice or alice@host"
-                            {...field}
-                          />
-                        </FormControl>
-                        {instanceHost ? (
-                          <p className="text-xs text-muted-foreground">
-                            Handle: {normalizeHandle(field.value || "alice")}
-                          </p>
-                        ) : null}
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                  <FormField
-                    control={loginForm.control}
-                    name="password"
-                    rules={{ required: "Password is required" }}
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Password</FormLabel>
-                        <FormControl>
-                          <Input
-                            type="password"
-                            autoComplete="current-password"
-                            placeholder="••••••••••••"
-                            {...field}
-                          />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                  {authError ? (
-                    <p className="text-destructive text-sm">{authError}</p>
-                  ) : null}
-                  <Button type="submit" className="w-full" disabled={loading === "login"}>
-                    {loading === "login" ? "Decrypting keys..." : "Unlock"}
-                  </Button>
-                </form>
-              </Form>
+            <TabsContent value="login" className="space-y-4">
+              <div className="text-sm text-muted-foreground">
+                Use your passkey to sign in. Your browser will prompt you to authenticate.
+              </div>
+              {authError ? (
+                <p className="text-destructive text-sm">{authError}</p>
+              ) : null}
+              <Button
+                onClick={handleLogin}
+                className="w-full"
+                disabled={loading === "login"}
+              >
+                <Fingerprint className="mr-2 h-4 w-4" />
+                {loading === "login" ? "Authenticating..." : "Sign in with Passkey"}
+              </Button>
             </TabsContent>
             <TabsContent value="register">
               <Form {...registerForm}>
@@ -185,17 +151,17 @@ export function AuthScreen() {
                     }}
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>Username or handle (local)</FormLabel>
+                        <FormLabel>Username</FormLabel>
                         <FormControl>
                           <Input
                             autoComplete="username"
-                            placeholder="new-handle or new-handle@host"
+                            placeholder="alice"
                             {...field}
                           />
                         </FormControl>
                         {instanceHost ? (
                           <p className="text-xs text-muted-foreground">
-                            Handle: {normalizeHandle(field.value || "new-handle")}
+                            Handle: {normalizeHandle(field.value || "alice")}
                           </p>
                         ) : null}
                         <FormMessage />
@@ -214,7 +180,7 @@ export function AuthScreen() {
                     }}
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>Password</FormLabel>
+                        <FormLabel>Master Password</FormLabel>
                         <FormControl>
                           <Input
                             type="password"
@@ -223,15 +189,57 @@ export function AuthScreen() {
                             {...field}
                           />
                         </FormControl>
+                        <p className="text-xs text-muted-foreground">
+                          Used to encrypt your private keys. Choose a strong, unique password.
+                        </p>
                         <FormMessage />
                       </FormItem>
                     )}
                   />
+                  <FormField
+                    control={registerForm.control}
+                    name="confirmPassword"
+                    rules={{
+                      required: "Please confirm your password",
+                      validate: (value) =>
+                        value === registerForm.watch("password") || "Passwords do not match",
+                    }}
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Confirm Password</FormLabel>
+                        <FormControl>
+                          <Input
+                            type="password"
+                            autoComplete="new-password"
+                            placeholder="confirm your password"
+                            {...field}
+                          />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  <div className="flex items-center space-x-2">
+                    <Switch
+                      id="save-password"
+                      checked={savePassword}
+                      onCheckedChange={setSavePassword}
+                    />
+                    <Label htmlFor="save-password" className="text-sm">
+                      Remember password on this device
+                    </Label>
+                  </div>
+                  {!savePassword && (
+                    <p className="text-xs text-muted-foreground">
+                      You&apos;ll need to enter your password each time you sign in.
+                    </p>
+                  )}
                   {authError ? (
                     <p className="text-destructive text-sm">{authError}</p>
                   ) : null}
                   <Button type="submit" className="w-full" disabled={loading === "register"}>
-                    {loading === "register" ? "Sealing keys..." : "Create Account"}
+                    <Key className="mr-2 h-4 w-4" />
+                    {loading === "register" ? "Creating passkey..." : "Create Account with Passkey"}
                   </Button>
                 </form>
               </Form>
@@ -240,16 +248,16 @@ export function AuthScreen() {
           <ScrollArea className="h-28 rounded-md border border-border bg-muted/70 p-3 text-xs text-muted-foreground">
             <div className="grid gap-2">
               <div className="flex items-center gap-2">
+                <Fingerprint className="h-3.5 w-3.5" />
+                <span>Passkeys provide phishing-resistant authentication.</span>
+              </div>
+              <div className="flex items-center gap-2">
                 <Lock className="h-3.5 w-3.5" />
-                <span>Master key derived locally; never transmitted.</span>
+                <span>Master password encrypts keys locally; never transmitted.</span>
               </div>
               <div className="flex items-center gap-2">
                 <User className="h-3.5 w-3.5" />
-                <span>Private keys stay encrypted at rest.</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <Lock className="h-3.5 w-3.5" />
-                <span>Server only sees auth hashes + encrypted keys.</span>
+                <span>Private keys stay encrypted at rest on your device.</span>
               </div>
             </div>
           </ScrollArea>

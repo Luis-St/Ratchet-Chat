@@ -31,6 +31,14 @@ import {
   registerFinish,
   registerStart,
 } from "@/lib/opaque"
+import {
+  startAuthentication,
+  startRegistration,
+} from "@simplewebauthn/browser"
+import type {
+  PublicKeyCredentialCreationOptionsJSON,
+  PublicKeyCredentialRequestOptionsJSON,
+} from "@simplewebauthn/browser"
 import type { Contact, DirectoryEntry } from "@/types/dashboard"
 
 type StoredKeys = {
@@ -43,6 +51,16 @@ type StoredKeys = {
   publicIdentityKey: string
   publicTransportKey: string
   token: string
+  // If true, master key is stored in IndexedDB for auto-unlock
+  savePassword?: boolean
+}
+
+export type PasskeyInfo = {
+  id: string
+  credentialId: string
+  name: string | null
+  createdAt: string
+  lastUsedAt: string
 }
 
 export type TransportKeyRotationPayload = {
@@ -62,7 +80,7 @@ export type SessionInfo = {
 }
 
 type AuthContextValue = {
-  status: "loading" | "guest" | "authenticated"
+  status: "loading" | "guest" | "locked" | "authenticated"
   user: { id: string | null; username: string; handle: string } | null
   token: string | null
   masterKey: CryptoKey | null
@@ -70,8 +88,12 @@ type AuthContextValue = {
   publicIdentityKey: string | null
   transportPrivateKey: Uint8Array | null
   publicTransportKey: string | null
-  register: (username: string, password: string) => Promise<void>
-  login: (username: string, password: string) => Promise<void>
+  // Passkey-based registration (requires passkey + password)
+  register: (username: string, password: string, savePassword?: boolean) => Promise<void>
+  // Passkey-based login (no password required, optional username hint)
+  loginWithPasskey: () => Promise<void>
+  // Unlock with password (when in locked state)
+  unlock: (password: string, savePassword?: boolean) => Promise<void>
   deleteAccount: () => Promise<void>
   logout: () => void
   fetchSessions: () => Promise<SessionInfo[]>
@@ -80,6 +102,10 @@ type AuthContextValue = {
   rotateTransportKey: () => Promise<void>
   applyTransportKeyRotation: (payload: TransportKeyRotationPayload) => Promise<void>
   getTransportKeyRotatedAt: () => Promise<number | null>
+  // Passkey management (requires authenticated + unlocked state)
+  fetchPasskeys: () => Promise<PasskeyInfo[]>
+  addPasskey: (name?: string) => Promise<PasskeyInfo>
+  removePasskey: (credentialId: string) => Promise<void>
 }
 
 const ACTIVE_SESSION_KEY = "active_session"
@@ -201,7 +227,7 @@ async function clearStaleData() {
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [status, setStatus] = React.useState<"loading" | "guest" | "authenticated">("loading")
+  const [status, setStatus] = React.useState<"loading" | "guest" | "locked" | "authenticated">("loading")
   const [token, setToken] = React.useState<string | null>(null)
   const [user, setUser] = React.useState<{
     id: string | null
@@ -273,13 +299,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           return
         }
 
-        // Load master key from IndexedDB (persistent sessions)
+        const userId = decodeJwtSubject(session.token)
+        setAuthToken(session.token)
+        setToken(session.token)
+        setUser({
+          id: userId,
+          username: session.username,
+          handle: session.handle,
+        })
+        setPublicIdentityKey(session.publicIdentityKey)
+        setPublicTransportKey(session.publicTransportKey)
+
+        // Load master key from IndexedDB (only if savePassword was true)
         const masterKeyRecord = await db.syncState.get("masterKey")
         const masterKeyJson = masterKeyRecord?.value as string | undefined
         if (!masterKeyJson) {
-          // Session exists but master key is missing - clear and go to guest
-          await clearStaleData()
-          setStatus("guest")
+          // Session exists but master key not saved - go to locked state
+          setStatus("locked")
           return
         }
         const masterKey = await importMasterKey(masterKeyJson)
@@ -297,30 +333,34 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           identityPrivateKey.length !== identitySecretKeyLength ||
           transportPrivateKey.length !== transportSecretKeyLength
         ) {
-          await clearStaleData()
-          setStatus("guest")
+          // Keys are invalid - go to locked to re-derive
+          setStatus("locked")
           return
         }
 
-        const userId = decodeJwtSubject(session.token)
-
-        setAuthToken(session.token)
-        setStatus("authenticated")
-        setToken(session.token)
-        setUser({
-          id: userId,
-          username: session.username,
-          handle: session.handle,
-        })
         setMasterKey(masterKey)
         setIdentityPrivateKey(identityPrivateKey)
-        setPublicIdentityKey(session.publicIdentityKey)
         setTransportPrivateKey(transportPrivateKey)
-        setPublicTransportKey(session.publicTransportKey)
+        setStatus("authenticated")
       } catch {
-        // Restoration failed - clear data and go to guest
-        await clearStaleData()
-        setStatus("guest")
+        // Restoration failed - try to go to locked if we have a session
+        const session = await loadActiveSession().catch(() => null)
+        if (session) {
+          const userId = decodeJwtSubject(session.token)
+          setAuthToken(session.token)
+          setToken(session.token)
+          setUser({
+            id: userId,
+            username: session.username,
+            handle: session.handle,
+          })
+          setPublicIdentityKey(session.publicIdentityKey)
+          setPublicTransportKey(session.publicTransportKey)
+          setStatus("locked")
+        } else {
+          await clearStaleData()
+          setStatus("guest")
+        }
       }
     }
     void restore()
@@ -440,7 +480,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   )
 
   const register = React.useCallback(
-    async (usernameInput: string, password: string) => {
+    async (usernameInput: string, password: string, savePassword = false) => {
       const { username, handle } = resolveLocalUser(usernameInput)
       const kdfSalt = generateSalt()
       const kdfIterations = 310_000
@@ -458,27 +498,50 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         transportPair.privateKey
       )
 
-      const registrationStart = await registerStart(password)
-      const startResponse = await apiFetch<{ response: string }>(
-        "/auth/opaque/register/start",
-        {
-          method: "POST",
-          body: {
-            username,
-            request: bytesToBase64(registrationStart.request),
-          },
-        }
-      )
-      const finishMessage = await registerFinish(
-        registrationStart.state,
-        base64ToBytes(startResponse.response)
-      )
-
-      await apiFetch("/auth/opaque/register/finish", {
+      // Start combined passkey + OPAQUE registration
+      const opaqueStart = await registerStart(password)
+      const startResponse = await apiFetch<{
+        opaque_response: string
+        passkey_options: PublicKeyCredentialCreationOptionsJSON
+      }>("/auth/passkey/register/start", {
         method: "POST",
         body: {
           username,
-          finish: bytesToBase64(finishMessage),
+          opaque_request: bytesToBase64(opaqueStart.request),
+        },
+      })
+
+      // Create passkey
+      const passkeyResponse = await startRegistration({
+        optionsJSON: startResponse.passkey_options,
+      })
+
+      // Finish OPAQUE registration
+      const opaqueFinish = await registerFinish(
+        opaqueStart.state,
+        base64ToBytes(startResponse.opaque_response)
+      )
+
+      // Complete registration with both passkey and OPAQUE
+      const finishResponse = await apiFetch<{
+        token: string
+        user: { id: string; username: string }
+        keys: {
+          encrypted_identity_key: string
+          encrypted_identity_iv: string
+          encrypted_transport_key: string
+          encrypted_transport_iv: string
+          kdf_salt: string
+          kdf_iterations: number
+          public_identity_key: string
+          public_transport_key: string
+        }
+      }>("/auth/passkey/register/finish", {
+        method: "POST",
+        body: {
+          username,
+          opaque_finish: bytesToBase64(opaqueFinish),
+          passkey_response: passkeyResponse,
           kdf_salt: bytesToBase64(kdfSalt),
           kdf_iterations: kdfIterations,
           public_identity_key: identityPair.publicKey,
@@ -490,20 +553,166 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         },
       })
 
-      await performOpaqueLogin(username, handle, password, {
-        kdf_salt: bytesToBase64(kdfSalt),
-        kdf_iterations: kdfIterations,
+      // Store session
+      setAuthToken(finishResponse.token)
+      await persistActiveSession({
+        username,
+        handle,
+        kdfSalt: bytesToBase64(kdfSalt),
+        kdfIterations,
+        identityPrivateKey: encryptedIdentity,
+        transportPrivateKey: encryptedTransport,
+        publicIdentityKey: identityPair.publicKey,
+        publicTransportKey: transportPair.publicKey,
+        token: finishResponse.token,
+        savePassword,
       })
+
+      // Only store master key if savePassword is true
+      if (savePassword) {
+        await db.syncState.put({
+          key: "masterKey",
+          value: await exportMasterKey(masterKey),
+        })
+      }
+
+      setStatus("authenticated")
+      setToken(finishResponse.token)
+      setUser({ id: finishResponse.user.id, username, handle })
+      setMasterKey(masterKey)
+      setIdentityPrivateKey(identityPair.privateKey)
+      setPublicIdentityKey(identityPair.publicKey)
+      setTransportPrivateKey(transportPair.privateKey)
+      setPublicTransportKey(transportPair.publicKey)
     },
-    [performOpaqueLogin]
+    []
   )
 
-  const login = React.useCallback(
-    async (usernameInput: string, password: string) => {
-      const { username, handle } = resolveLocalUser(usernameInput)
-      await performOpaqueLogin(username, handle, password)
+  const loginWithPasskey = React.useCallback(async () => {
+    // Get passkey login options for discoverable credentials
+    const options = await apiFetch<PublicKeyCredentialRequestOptionsJSON>(
+      "/auth/passkey/login/options",
+      { method: "POST", body: {} }
+    )
+
+    // Authenticate with passkey
+    const authResponse = await startAuthentication({ optionsJSON: options })
+
+    // Finish login
+    const loginResponse = await apiFetch<{
+      token: string
+      user: { id: string; username: string }
+      keys: {
+        encrypted_identity_key: string
+        encrypted_identity_iv: string
+        encrypted_transport_key: string
+        encrypted_transport_iv: string
+        kdf_salt: string
+        kdf_iterations: number
+        public_identity_key: string
+        public_transport_key: string
+      }
+    }>("/auth/passkey/login/finish", {
+      method: "POST",
+      body: { response: authResponse },
+    })
+
+    const instanceHost = getInstanceHost()
+    const handle = `${loginResponse.user.username}@${instanceHost}`
+    const userId = loginResponse.user.id
+
+    setAuthToken(loginResponse.token)
+    await persistActiveSession({
+      username: loginResponse.user.username,
+      handle,
+      kdfSalt: loginResponse.keys.kdf_salt,
+      kdfIterations: loginResponse.keys.kdf_iterations,
+      identityPrivateKey: {
+        ciphertext: loginResponse.keys.encrypted_identity_key,
+        iv: loginResponse.keys.encrypted_identity_iv,
+      },
+      transportPrivateKey: {
+        ciphertext: loginResponse.keys.encrypted_transport_key,
+        iv: loginResponse.keys.encrypted_transport_iv,
+      },
+      publicIdentityKey: loginResponse.keys.public_identity_key,
+      publicTransportKey: loginResponse.keys.public_transport_key,
+      token: loginResponse.token,
+      savePassword: false,
+    })
+
+    // Go to locked state - user needs to enter password to unlock
+    setToken(loginResponse.token)
+    setUser({ id: userId, username: loginResponse.user.username, handle })
+    setPublicIdentityKey(loginResponse.keys.public_identity_key)
+    setPublicTransportKey(loginResponse.keys.public_transport_key)
+    setStatus("locked")
+  }, [])
+
+  const unlock = React.useCallback(
+    async (password: string, savePassword = false) => {
+      const session = await loadActiveSession()
+      if (!session) {
+        throw new Error("No session to unlock")
+      }
+
+      // Derive master key from password
+      const masterKey = await deriveMasterKey(
+        password,
+        base64ToBytes(session.kdfSalt),
+        session.kdfIterations
+      )
+
+      // Verify password via OPAQUE unlock
+      const unlockStart = await loginStart(password)
+      const startResponse = await apiFetch<{ response: string }>(
+        "/auth/opaque/unlock/start",
+        {
+          method: "POST",
+          body: { request: bytesToBase64(unlockStart.request) },
+        }
+      )
+      const unlockFinishState = await loginFinish(
+        unlockStart.state,
+        base64ToBytes(startResponse.response)
+      )
+      await apiFetch("/auth/opaque/unlock/finish", {
+        method: "POST",
+        body: { finish: bytesToBase64(unlockFinishState.finishMessage) },
+      })
+
+      // Decrypt private keys
+      const identityPrivateKey = await decryptPrivateKey(
+        masterKey,
+        session.identityPrivateKey
+      )
+      const transportPrivateKey = await decryptPrivateKey(
+        masterKey,
+        session.transportPrivateKey
+      )
+
+      if (
+        identityPrivateKey.length !== identitySecretKeyLength ||
+        transportPrivateKey.length !== transportSecretKeyLength
+      ) {
+        throw new Error("Invalid key material")
+      }
+
+      // Store master key if savePassword is true
+      if (savePassword) {
+        await db.syncState.put({
+          key: "masterKey",
+          value: await exportMasterKey(masterKey),
+        })
+        await updateActiveSession({ savePassword: true })
+      }
+
+      setMasterKey(masterKey)
+      setIdentityPrivateKey(identityPrivateKey)
+      setTransportPrivateKey(transportPrivateKey)
+      setStatus("authenticated")
     },
-    [performOpaqueLogin]
+    []
   )
 
   const deleteAccount = React.useCallback(async () => {
@@ -708,6 +917,43 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return result.count
   }, [])
 
+  const fetchPasskeys = React.useCallback(async (): Promise<PasskeyInfo[]> => {
+    return apiFetch<PasskeyInfo[]>("/auth/passkeys")
+  }, [])
+
+  const addPasskey = React.useCallback(async (name?: string): Promise<PasskeyInfo> => {
+    // Get creation options
+    const options = await apiFetch<PublicKeyCredentialCreationOptionsJSON>(
+      "/auth/passkeys/add/start",
+      { method: "POST" }
+    )
+    // Create passkey
+    const response = await startRegistration({ optionsJSON: options })
+    // Finish and return new passkey info
+    return apiFetch<PasskeyInfo>("/auth/passkeys/add/finish", {
+      method: "POST",
+      body: { response, name },
+    })
+  }, [])
+
+  const removePasskey = React.useCallback(async (credentialId: string): Promise<void> => {
+    // Get assertion options (excluding target credential)
+    const options = await apiFetch<PublicKeyCredentialRequestOptionsJSON>(
+      "/auth/passkeys/remove/start",
+      {
+        method: "POST",
+        body: { credential_id: credentialId },
+      }
+    )
+    // Authenticate with different passkey
+    const response = await startAuthentication({ optionsJSON: options })
+    // Complete removal
+    await apiFetch("/auth/passkeys/remove/finish", {
+      method: "POST",
+      body: { target_credential_id: credentialId, response },
+    })
+  }, [])
+
   const logout = React.useCallback(() => {
     void clearSession(true)
   }, [clearSession])
@@ -723,7 +969,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       transportPrivateKey,
       publicTransportKey,
       register,
-      login,
+      loginWithPasskey,
+      unlock,
       deleteAccount,
       logout,
       fetchSessions,
@@ -732,6 +979,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       rotateTransportKey,
       applyTransportKeyRotation,
       getTransportKeyRotatedAt: loadTransportKeyRotatedAt,
+      fetchPasskeys,
+      addPasskey,
+      removePasskey,
     }),
     [
       status,
@@ -743,7 +993,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       transportPrivateKey,
       publicTransportKey,
       register,
-      login,
+      loginWithPasskey,
+      unlock,
       deleteAccount,
       logout,
       fetchSessions,
@@ -752,6 +1003,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       rotateTransportKey,
       applyTransportKeyRotation,
       loadTransportKeyRotatedAt,
+      fetchPasskeys,
+      addPasskey,
+      removePasskey,
     ]
   )
 

@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { Copy, Eye, EyeOff, Fingerprint, Lock, LogOut, Monitor, Shield } from "lucide-react"
+import { Copy, Eye, EyeOff, Fingerprint, Key, Lock, LogOut, Monitor, Plus, Shield, Trash2 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
@@ -15,7 +15,7 @@ import {
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { useAuth, type SessionInfo } from "@/context/AuthContext"
+import { useAuth, type SessionInfo, type PasskeyInfo } from "@/context/AuthContext"
 import { useCall } from "@/context/CallContext"
 import { useSettings } from "@/hooks/useSettings"
 import { Badge } from "@/components/ui/badge"
@@ -71,7 +71,7 @@ export function SettingsDialog({
   open: boolean
   onOpenChange: (open: boolean) => void
 }) {
-  const { user, publicIdentityKey, deleteAccount, fetchSessions, invalidateSession, invalidateAllOtherSessions, rotateTransportKey, getTransportKeyRotatedAt } = useAuth()
+  const { user, publicIdentityKey, deleteAccount, fetchSessions, invalidateSession, invalidateAllOtherSessions, rotateTransportKey, getTransportKeyRotatedAt, fetchPasskeys, addPasskey, removePasskey } = useAuth()
   const { callState } = useCall()
   const { settings, updateSettings } = useSettings()
   const isInActiveCall = callState.status !== "idle" && callState.status !== "ended"
@@ -88,6 +88,14 @@ export function SettingsDialog({
   const [sessions, setSessions] = React.useState<SessionInfo[]>([])
   const [loadingSessions, setLoadingSessions] = React.useState(false)
   const [invalidatingSessionId, setInvalidatingSessionId] = React.useState<string | null>(null)
+
+  // Passkey management state
+  const [passkeys, setPasskeys] = React.useState<PasskeyInfo[]>([])
+  const [loadingPasskeys, setLoadingPasskeys] = React.useState(false)
+  const [addingPasskey, setAddingPasskey] = React.useState(false)
+  const [removingPasskeyId, setRemovingPasskeyId] = React.useState<string | null>(null)
+  const [passkeyError, setPasskeyError] = React.useState<string | null>(null)
+  const [newPasskeyName, setNewPasskeyName] = React.useState("")
 
   const identityKey = publicIdentityKey ?? ""
   const identityKeyPreview = formatKeyPreview(identityKey)
@@ -118,12 +126,73 @@ export function SettingsDialog({
     }
   }, [getTransportKeyRotatedAt])
 
+  const loadPasskeys = React.useCallback(async () => {
+    setLoadingPasskeys(true)
+    setPasskeyError(null)
+    try {
+      const data = await fetchPasskeys()
+      setPasskeys(data)
+    } catch {
+      setPasskeyError("Unable to load passkeys")
+    } finally {
+      setLoadingPasskeys(false)
+    }
+  }, [fetchPasskeys])
+
+  const handleAddPasskey = React.useCallback(async () => {
+    setAddingPasskey(true)
+    setPasskeyError(null)
+    try {
+      const passkey = await addPasskey(newPasskeyName.trim() || undefined)
+      setPasskeys((prev) => [...prev, passkey])
+      setNewPasskeyName("")
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to add passkey"
+      // Handle user cancellation gracefully
+      if (message.includes("cancelled") || message.includes("canceled") || message.includes("abort")) {
+        setPasskeyError(null)
+      } else {
+        setPasskeyError(message)
+      }
+    } finally {
+      setAddingPasskey(false)
+    }
+  }, [addPasskey, newPasskeyName])
+
+  const handleRemovePasskey = React.useCallback(async (credentialId: string) => {
+    if (passkeys.length <= 1) {
+      setPasskeyError("You must have at least one passkey to access your account")
+      return
+    }
+    const confirmed = window.confirm(
+      "Remove this passkey? You'll need to authenticate with a different passkey to confirm."
+    )
+    if (!confirmed) return
+
+    setRemovingPasskeyId(credentialId)
+    setPasskeyError(null)
+    try {
+      await removePasskey(credentialId)
+      setPasskeys((prev) => prev.filter((p) => p.credentialId !== credentialId))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to remove passkey"
+      if (message.includes("cancelled") || message.includes("canceled") || message.includes("abort")) {
+        setPasskeyError(null)
+      } else {
+        setPasskeyError(message)
+      }
+    } finally {
+      setRemovingPasskeyId(null)
+    }
+  }, [removePasskey, passkeys.length])
+
   React.useEffect(() => {
     if (open) {
       void loadSessions()
       void loadTransportRotation()
+      void loadPasskeys()
     }
-  }, [open, loadSessions, loadTransportRotation])
+  }, [open, loadSessions, loadTransportRotation, loadPasskeys])
 
   React.useEffect(() => {
     if (!open) {
@@ -131,6 +200,8 @@ export function SettingsDialog({
       setDeleteError(null)
       setIsDeleting(false)
       setRotateTransportError(null)
+      setPasskeyError(null)
+      setNewPasskeyName("")
     }
   }, [open])
 
@@ -222,10 +293,11 @@ export function SettingsDialog({
         </DialogHeader>
         <Tabs defaultValue="privacy" className="w-full flex-1 min-h-0 flex flex-col">
           <div className="sticky top-0 z-10 bg-background">
-            <TabsList className="grid w-full grid-cols-3">
+            <TabsList className="grid w-full grid-cols-2 sm:grid-cols-4 h-auto p-1">
               <TabsTrigger value="privacy">Privacy</TabsTrigger>
+              <TabsTrigger value="passkeys">Passkeys</TabsTrigger>
               <TabsTrigger value="sessions">Sessions</TabsTrigger>
-              <TabsTrigger value="security">Identity</TabsTrigger>
+              <TabsTrigger value="security">Security</TabsTrigger>
             </TabsList>
           </div>
 
@@ -264,7 +336,7 @@ export function SettingsDialog({
             </div>
             </TabsContent>
 
-            <TabsContent value="sessions" className="space-y-4 py-4">
+            <TabsContent value="sessions" className="space-y-6 py-4">
             <div className="space-y-1 mb-4">
               <h3 className="text-sm font-medium">Active Sessions</h3>
               <p className="text-xs text-muted-foreground">
@@ -325,12 +397,87 @@ export function SettingsDialog({
             {sessions.length > 1 && (
               <Button
                 variant="outline"
-                className="w-full mt-4"
+                className="w-full"
                 onClick={handleInvalidateAllOther}
               >
                 Log out all other sessions
               </Button>
             )}
+            </TabsContent>
+
+            <TabsContent value="passkeys" className="space-y-4 py-4">
+              <div className="space-y-1 mb-4">
+                <h3 className="text-sm font-medium">Your Passkeys</h3>
+                <p className="text-xs text-muted-foreground">
+                  Passkeys are a secure, phishing-resistant way to sign in. You need at least one passkey to access your account.
+                </p>
+              </div>
+
+              {loadingPasskeys ? (
+                <p className="text-sm text-muted-foreground">Loading passkeys...</p>
+              ) : (
+                <div className="space-y-3 max-h-[250px] overflow-y-auto">
+                  {passkeys.map((passkey) => (
+                    <div
+                      key={passkey.id}
+                      className="flex items-start justify-between rounded-lg border p-3"
+                    >
+                      <div className="flex items-start gap-3">
+                        <Key className="mt-0.5 h-4 w-4 text-muted-foreground" />
+                        <div className="space-y-1">
+                          <span className="text-sm font-medium">
+                            {passkey.name || "Passkey"}
+                          </span>
+                          <p className="text-xs text-muted-foreground">
+                            Created {formatRelativeTime(passkey.createdAt)}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            Last used {formatRelativeTime(passkey.lastUsedAt)}
+                          </p>
+                        </div>
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8 text-destructive hover:text-destructive"
+                        onClick={() => handleRemovePasskey(passkey.credentialId)}
+                        disabled={removingPasskeyId === passkey.credentialId || passkeys.length <= 1}
+                        title={passkeys.length <= 1 ? "Cannot remove last passkey" : "Remove passkey"}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {passkeyError ? (
+                <p className="text-sm text-destructive">{passkeyError}</p>
+              ) : null}
+
+              <div className="mt-4 space-y-3 rounded-lg border p-4">
+                <h4 className="text-sm font-medium">Add a new passkey</h4>
+                <div className="space-y-2">
+                  <Label htmlFor="passkey-name" className="text-xs">
+                    Name (optional)
+                  </Label>
+                  <Input
+                    id="passkey-name"
+                    value={newPasskeyName}
+                    onChange={(e) => setNewPasskeyName(e.target.value)}
+                    placeholder="e.g., Work laptop, Phone"
+                    disabled={addingPasskey}
+                  />
+                </div>
+                <Button
+                  onClick={handleAddPasskey}
+                  disabled={addingPasskey}
+                  className="w-full"
+                >
+                  <Plus className="mr-2 h-4 w-4" />
+                  {addingPasskey ? "Adding passkey..." : "Add Passkey"}
+                </Button>
+              </div>
             </TabsContent>
 
             <TabsContent value="security" className="space-y-4 py-4">
