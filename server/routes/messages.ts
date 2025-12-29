@@ -23,10 +23,8 @@ const sendSchema = z.object({
   recipient_handle: z.string().min(1),
   encrypted_blob: z.string().min(1),
   message_id: z.string().uuid(),
-  event_type: z
-    .enum(["message", "edit", "delete", "reaction", "receipt", "key_rotation"])
-    .optional(),
-  reaction_emoji: z.string().optional(),
+  event_id: z.string().uuid().optional(), // For modification events - their own unique ID (server treats as opaque)
+  // Note: event_type and reaction_emoji removed for privacy - server should not know what actions users perform
   sender_vault_blob: z.string().min(1).optional(),
   sender_vault_iv: z.string().min(1).optional(),
   sender_vault_signature_verified: z.boolean().optional(),
@@ -191,12 +189,16 @@ export const createMessagesRouter = (
       recipient_handle,
       encrypted_blob,
       message_id,
-      event_type = "message",
-      reaction_emoji,
+      event_id,
       sender_vault_blob,
       sender_vault_iv,
       sender_vault_signature_verified,
     } = parsed.data;
+
+    // Use event_id for vault storage if provided (for modification events)
+    // Otherwise use message_id (for new messages)
+    // Server treats both as opaque identifiers - no knowledge of what action is being performed
+    const vaultEntryId = event_id ?? message_id;
     let recipientParsed;
     try {
       recipientParsed = parseHandle(recipient_handle, instanceHost);
@@ -218,7 +220,7 @@ export const createMessagesRouter = (
         return false;
       }
       const existing = await prisma.messageVault.findUnique({
-        where: { id: message_id },
+        where: { id: vaultEntryId },
         select: { id: true, owner_id: true },
       });
       if (existing) {
@@ -226,7 +228,7 @@ export const createMessagesRouter = (
       }
       await prisma.messageVault.create({
         data: {
-          id: message_id,
+          id: vaultEntryId,
           owner_id: req.user!.id,
           peer_handle: recipientParsed.handle,
           original_sender_handle: recipientParsed.handle,
@@ -297,7 +299,7 @@ export const createMessagesRouter = (
       // Notify other devices of the sender about the outgoing message
       if (senderVaultStored && sender_vault_blob && sender_vault_iv) {
         io.to(req.user!.id).emit("OUTGOING_MESSAGE_SYNCED", {
-          message_id,
+          message_id: vaultEntryId,
           owner_id: req.user!.id,
           original_sender_handle: recipientParsed.handle,
           encrypted_blob: sender_vault_blob,
@@ -325,67 +327,27 @@ export const createMessagesRouter = (
     const queueItem = await prisma.$transaction(async (tx) => {
       let senderVaultStored = false;
 
-      // Queue compaction based on event type
-      if (event_type === "delete") {
-        // Delete ALL pending events for this message
-        await tx.incomingQueue.deleteMany({
-          where: {
-            recipient_id: recipient.id,
-            message_id,
-          },
-        });
-      } else if (event_type === "message" || event_type === "edit") {
-        // Replace existing message/edit for this message_id
-        await tx.incomingQueue.deleteMany({
-          where: {
-            recipient_id: recipient.id,
-            message_id,
-            event_type: { in: ["message", "edit"] },
-          },
-        });
-      } else if (event_type === "reaction") {
-        // Replace existing reaction from same sender for same emoji
-        await tx.incomingQueue.deleteMany({
-          where: {
-            recipient_id: recipient.id,
-            message_id,
-            sender_handle: senderHandle,
-            event_type: "reaction",
-            reaction_emoji,
-          },
-        });
-      } else if (event_type === "key_rotation") {
-        // Keep only the latest key rotation per sender
-        await tx.incomingQueue.deleteMany({
-          where: {
-            recipient_id: recipient.id,
-            sender_handle: senderHandle,
-            event_type: "key_rotation",
-          },
-        });
-      }
-      // For receipts, no compaction needed - they're informational
+      // No server-side queue compaction - server treats all messages as opaque encrypted blobs
+      // Client handles deduplication after decryption for privacy
 
       const created = await tx.incomingQueue.create({
         data: {
           recipient_id: recipient.id,
           sender_handle: senderHandle,
           message_id,
-          event_type,
-          reaction_emoji: event_type === "reaction" ? reaction_emoji : null,
           encrypted_blob,
         },
       });
 
       if (sender_vault_blob && sender_vault_iv) {
         const existing = await tx.messageVault.findUnique({
-          where: { id: message_id },
+          where: { id: vaultEntryId },
           select: { id: true },
         });
         if (!existing) {
           await tx.messageVault.create({
             data: {
-              id: message_id,
+              id: vaultEntryId,
               owner_id: req.user!.id,
               peer_handle: recipientParsed.handle,
               original_sender_handle: recipientParsed.handle,
@@ -422,7 +384,7 @@ export const createMessagesRouter = (
     // Notify other devices of the sender about the outgoing message
     if (queueItem.senderVaultStored && sender_vault_blob && sender_vault_iv) {
       io.to(req.user!.id).emit("OUTGOING_MESSAGE_SYNCED", {
-        message_id,
+        message_id: vaultEntryId,
         owner_id: req.user!.id,
         original_sender_handle: recipientParsed.handle,
         encrypted_blob: sender_vault_blob,

@@ -67,6 +67,8 @@ export type TransportKeyRotationPayload = {
   public_transport_key: string
   encrypted_transport_key: string
   encrypted_transport_iv: string
+  rotated_at?: number
+  timestamp?: string
 }
 
 export type SessionInfo = {
@@ -806,6 +808,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         public_transport_key: transportPair.publicKey,
         encrypted_transport_key: encryptedTransport.ciphertext,
         encrypted_transport_iv: encryptedTransport.iv,
+        rotated_at: rotatedAt,
       },
     })
 
@@ -877,7 +880,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const applyTransportKeyRotation = React.useCallback(
     async (payload: TransportKeyRotationPayload) => {
+      console.log("[Auth] applyTransportKeyRotation called", { hasMasterKey: !!masterKey })
       if (!masterKey) {
+        console.warn("[Auth] Cannot apply transport key rotation - no master key")
         return
       }
       try {
@@ -892,9 +897,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         })
         setTransportPrivateKey(nextTransportKey)
         setPublicTransportKey(payload.public_transport_key)
-        await setTransportKeyRotatedAt(Date.now())
-      } catch {
-        // Best-effort rotation apply
+        const rotatedAt = (() => {
+          if (typeof payload.rotated_at === "number" && Number.isFinite(payload.rotated_at)) {
+            return payload.rotated_at
+          }
+          if (typeof payload.timestamp === "string") {
+            const asNumber = Number(payload.timestamp)
+            if (Number.isFinite(asNumber)) {
+              return asNumber
+            }
+            const parsed = Date.parse(payload.timestamp)
+            if (!Number.isNaN(parsed)) {
+              return parsed
+            }
+          }
+          return Date.now()
+        })()
+        await setTransportKeyRotatedAt(rotatedAt)
+        console.log("[Auth] Transport key rotation applied successfully")
+      } catch (error) {
+        console.error("[Auth] Failed to apply transport key rotation:", error)
       }
     },
     [masterKey]

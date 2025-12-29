@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { Copy, Eye, EyeOff, Fingerprint, Shield } from "lucide-react"
+import { Ban, Copy, Eye, EyeOff, Fingerprint, Shield, Trash2, UserPlus } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -13,23 +13,23 @@ import {
 } from "@/components/ui/dialog"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
-
-type Contact = {
-  handle: string
-  username: string
-  host: string
-  publicIdentityKey: string
-  publicTransportKey: string
-}
+import { Separator } from "@/components/ui/separator"
+import type { Contact } from "@/types/dashboard"
 
 export function RecipientInfoDialog({
   contact,
   open,
   onOpenChange,
+  onBlockUser,
+  onAddContact,
+  onRemoveContact,
 }: {
   contact: Contact | null
   open: boolean
   onOpenChange: (open: boolean) => void
+  onBlockUser?: (contact: Contact) => void
+  onAddContact?: (contact: Contact) => void
+  onRemoveContact?: (contact: Contact) => void
 }) {
   const [showIdentityKey, setShowIdentityKey] = React.useState(false)
 
@@ -132,6 +132,44 @@ export function RecipientInfoDialog({
               </div>
             </div>
           </div>
+
+          {(onBlockUser || onRemoveContact || onAddContact) && (
+            <div className="w-full pt-2">
+              <Separator className="mb-3" />
+              <div className="space-y-2">
+                <p className="text-xs font-semibold uppercase text-muted-foreground">Actions</p>
+                <div className="flex flex-col gap-2">
+                  {onAddContact && (
+                    <Button
+                      variant="outline"
+                      onClick={() => onAddContact(contact)}
+                    >
+                      <UserPlus className="mr-2 h-4 w-4" />
+                      Add to contacts
+                    </Button>
+                  )}
+                  {onBlockUser && (
+                    <Button
+                      variant="destructive"
+                      onClick={() => onBlockUser(contact)}
+                    >
+                      <Ban className="mr-2 h-4 w-4" />
+                      Block User
+                    </Button>
+                  )}
+                  {onRemoveContact && (
+                    <Button
+                      variant="outline"
+                      onClick={() => onRemoveContact(contact)}
+                    >
+                      <Trash2 className="mr-2 h-4 w-4" />
+                      Remove from contacts
+                    </Button>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </DialogContent>
     </Dialog>

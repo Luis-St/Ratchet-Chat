@@ -17,6 +17,8 @@ const SENSITIVE_KEYS = new Set([
   "encrypted_transport_key",
   "encrypted_identity_iv",
   "encrypted_transport_iv",
+  "encrypted_contacts",
+  "encrypted_contacts_iv",
   "private_key",
   "server_private_key",
   "token",

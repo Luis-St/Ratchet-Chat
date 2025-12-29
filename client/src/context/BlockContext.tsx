@@ -20,6 +20,7 @@ type BlockContextValue = {
   blockServer: (server: string) => Promise<void>
   unblockServer: (server: string) => Promise<void>
   isLoading: boolean
+  applyEncryptedBlockList: (encrypted: { ciphertext: string; iv: string } | null) => Promise<void>
 }
 
 const BLOCK_LIST_KEY = "encryptedBlockList"
@@ -32,6 +33,35 @@ export function BlockProvider({ children }: { children: React.ReactNode }) {
   const [blockedServers, setBlockedServers] = React.useState<string[]>([])
   const [isLoading, setIsLoading] = React.useState(true)
 
+  const applyEncryptedBlockList = React.useCallback(
+    async (encrypted: EncryptedPayload | null) => {
+      if (!encrypted) {
+        setBlockedUsers([])
+        setBlockedServers([])
+        await db.syncState.delete(BLOCK_LIST_KEY)
+        return
+      }
+
+      await db.syncState.put({ key: BLOCK_LIST_KEY, value: encrypted })
+
+      if (!masterKey) {
+        return
+      }
+
+      try {
+        const decrypted = await decryptString(masterKey, encrypted)
+        const blockList = JSON.parse(decrypted) as BlockList
+        const users = (blockList.users ?? []).map((entry) => entry.toLowerCase())
+        const servers = (blockList.servers ?? []).map((entry) => entry.toLowerCase())
+        setBlockedUsers(users)
+        setBlockedServers(servers)
+      } catch (error) {
+        console.error("Failed to decrypt block list:", error)
+      }
+    },
+    [masterKey]
+  )
+
   // Load block list: try server first, fall back to local cache
   React.useEffect(() => {
     if (status !== "authenticated" || !masterKey) {
@@ -41,6 +71,8 @@ export function BlockProvider({ children }: { children: React.ReactNode }) {
       return
     }
 
+    let active = true
+    setIsLoading(true)
     async function loadBlockList() {
       try {
         // Try to load from server first
@@ -51,33 +83,31 @@ export function BlockProvider({ children }: { children: React.ReactNode }) {
         let encrypted: EncryptedPayload | null = null
 
         if (serverData?.ciphertext && serverData?.iv) {
-          // Use server data
           encrypted = { ciphertext: serverData.ciphertext, iv: serverData.iv }
-          // Update local cache
-          await db.syncState.put({ key: BLOCK_LIST_KEY, value: encrypted })
         } else {
-          // Fall back to local cache
           const record = await db.syncState.get(BLOCK_LIST_KEY)
           if (record?.value) {
             encrypted = record.value as EncryptedPayload
           }
         }
 
-        if (encrypted) {
-          const decrypted = await decryptString(masterKey!, encrypted)
-          const blockList = JSON.parse(decrypted) as BlockList
-          setBlockedUsers(blockList.users ?? [])
-          setBlockedServers(blockList.servers ?? [])
-        }
+        await applyEncryptedBlockList(encrypted)
       } catch (error) {
         console.error("Failed to load block list:", error)
       } finally {
-        setIsLoading(false)
+        if (active) {
+          setIsLoading(false)
+        }
       }
     }
 
     void loadBlockList()
-  }, [status, masterKey])
+    return () => {
+      active = false
+    }
+  }, [status, masterKey, applyEncryptedBlockList])
+
+  // BLOCK_LIST_UPDATED is now handled by SyncManager in SyncContext
 
   // Save encrypted block list to both local and server
   const saveBlockList = React.useCallback(
@@ -179,6 +209,7 @@ export function BlockProvider({ children }: { children: React.ReactNode }) {
       blockServer,
       unblockServer,
       isLoading,
+      applyEncryptedBlockList,
     }),
     [
       blockedUsers,
@@ -189,6 +220,7 @@ export function BlockProvider({ children }: { children: React.ReactNode }) {
       blockServer,
       unblockServer,
       isLoading,
+      applyEncryptedBlockList,
     ]
   )
 
