@@ -5,7 +5,6 @@ import { db } from "@/lib/db"
 import { encryptString, decryptString, type EncryptedPayload } from "@/lib/crypto"
 import { apiFetch } from "@/lib/api"
 import { useAuth } from "./AuthContext"
-import { useSocket } from "@/context/SocketContext"
 
 type BlockList = {
   users: string[] // Full handles like "alice@server.com"
@@ -21,6 +20,7 @@ type BlockContextValue = {
   blockServer: (server: string) => Promise<void>
   unblockServer: (server: string) => Promise<void>
   isLoading: boolean
+  applyEncryptedBlockList: (encrypted: { ciphertext: string; iv: string } | null) => Promise<void>
 }
 
 const BLOCK_LIST_KEY = "encryptedBlockList"
@@ -29,7 +29,6 @@ const BlockContext = React.createContext<BlockContextValue | undefined>(undefine
 
 export function BlockProvider({ children }: { children: React.ReactNode }) {
   const { status, masterKey } = useAuth()
-  const socket = useSocket()
   const [blockedUsers, setBlockedUsers] = React.useState<string[]>([])
   const [blockedServers, setBlockedServers] = React.useState<string[]>([])
   const [isLoading, setIsLoading] = React.useState(true)
@@ -108,25 +107,7 @@ export function BlockProvider({ children }: { children: React.ReactNode }) {
     }
   }, [status, masterKey, applyEncryptedBlockList])
 
-  React.useEffect(() => {
-    if (!socket) return
-
-    const handleBlockListUpdated = (payload?: { ciphertext?: string; iv?: string }) => {
-      if (!payload?.ciphertext || !payload?.iv) {
-        return
-      }
-      void applyEncryptedBlockList({
-        ciphertext: payload.ciphertext,
-        iv: payload.iv,
-      })
-    }
-
-    socket.on("BLOCK_LIST_UPDATED", handleBlockListUpdated)
-
-    return () => {
-      socket.off("BLOCK_LIST_UPDATED", handleBlockListUpdated)
-    }
-  }, [socket, applyEncryptedBlockList])
+  // BLOCK_LIST_UPDATED is now handled by SyncManager in SyncContext
 
   // Save encrypted block list to both local and server
   const saveBlockList = React.useCallback(
@@ -228,6 +209,7 @@ export function BlockProvider({ children }: { children: React.ReactNode }) {
       blockServer,
       unblockServer,
       isLoading,
+      applyEncryptedBlockList,
     }),
     [
       blockedUsers,
@@ -238,6 +220,7 @@ export function BlockProvider({ children }: { children: React.ReactNode }) {
       blockServer,
       unblockServer,
       isLoading,
+      applyEncryptedBlockList,
     ]
   )
 

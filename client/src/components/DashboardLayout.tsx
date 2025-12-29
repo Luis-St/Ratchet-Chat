@@ -22,16 +22,19 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
-import { useAuth, type TransportKeyRotationPayload } from "@/context/AuthContext"
+import { useAuth } from "@/context/AuthContext"
 import { useBlock } from "@/context/BlockContext"
 import { useCall } from "@/context/CallContext"
+import { useContacts } from "@/context/ContactsContext"
 import { useSocket } from "@/context/SocketContext"
 import { useSettings } from "@/hooks/useSettings"
 import { useRatchetSync } from "@/hooks/useRatchetSync"
 import { apiFetch } from "@/lib/api"
 import {
   CONTACT_TRANSPORT_KEY_UPDATED_EVENT,
+  OPEN_CONTACT_CHAT_EVENT,
   type ContactTransportKeyUpdatedDetail,
+  type OpenContactChatDetail,
 } from "@/lib/events"
 import {
   decryptString,
@@ -43,7 +46,7 @@ import {
   decodeUtf8,
 } from "@/lib/crypto"
 import { normalizeHandle, splitHandle } from "@/lib/handles"
-import { db, type MessageRecord, type ContactRecord } from "@/lib/db"
+import { db, type MessageRecord } from "@/lib/db"
 import { cn } from "@/lib/utils"
 import { RecipientInfoDialog } from "@/components/RecipientInfoDialog"
 import { ImagePreviewDialog } from "@/components/ImagePreviewDialog"
@@ -55,7 +58,6 @@ import { formatDuration } from "@/lib/webrtc"
 import type { Contact, StoredMessage, DirectoryEntry, Attachment } from "@/types/dashboard"
 import {
   decodeContactRecord,
-  saveContactRecord,
   decodeMessageRecord,
   applyMessageEvents,
   formatTimestamp,
@@ -89,6 +91,52 @@ const formatMessageDateLabel = (date: Date, now: Date) => {
   })
 }
 
+const normalizeContact = (contact: Contact): Contact => {
+  const handle = normalizeHandle(contact.handle)
+  const parts = splitHandle(handle)
+  return {
+    handle: parts?.handle ?? handle,
+    username: contact.username || parts?.username || handle,
+    host: contact.host || parts?.host || "",
+    publicIdentityKey: contact.publicIdentityKey ?? "",
+    publicTransportKey: contact.publicTransportKey ?? "",
+    createdAt: contact.createdAt,
+  }
+}
+
+const mergeContact = (existing: Contact, incoming: Contact): Contact => {
+  const createdAt = existing.createdAt
+    ? incoming.createdAt
+      ? new Date(existing.createdAt) <= new Date(incoming.createdAt)
+        ? existing.createdAt
+        : incoming.createdAt
+      : existing.createdAt
+    : incoming.createdAt
+  return {
+    handle: incoming.handle || existing.handle,
+    username: incoming.username || existing.username,
+    host: incoming.host || existing.host,
+    publicIdentityKey: incoming.publicIdentityKey || existing.publicIdentityKey,
+    publicTransportKey: incoming.publicTransportKey || existing.publicTransportKey,
+    createdAt,
+  }
+}
+
+const mergeContactLists = (base: Contact[], incoming: Contact[]) => {
+  const map = new Map<string, Contact>()
+  for (const contact of base) {
+    const normalized = normalizeContact(contact)
+    map.set(normalized.handle.toLowerCase(), normalized)
+  }
+  for (const contact of incoming) {
+    const normalized = normalizeContact(contact)
+    const key = normalized.handle.toLowerCase()
+    const existing = map.get(key)
+    map.set(key, existing ? mergeContact(existing, normalized) : normalized)
+  }
+  return Array.from(map.values())
+}
+
 export function DashboardLayout() {
   const LAST_SELECTED_CHAT_KEY = "lastSelectedChat"
   const {
@@ -98,14 +146,21 @@ export function DashboardLayout() {
     publicIdentityKey,
     transportPrivateKey,
     logout,
-    applyTransportKeyRotation,
   } = useAuth()
   const { theme } = useTheme()
   const socket = useSocket()
   const { settings } = useSettings()
   const { initiateCall, callState, handleCallMessage, externalCallActive } = useCall()
   const { isBlocked, blockUser } = useBlock()
+  const { contacts: syncedContacts, addContact, removeContact } = useContacts()
   const [contacts, setContacts] = React.useState<Contact[]>([])
+  const savedContactHandles = React.useMemo(() => {
+    return new Set(
+      syncedContacts.map((contact) =>
+        normalizeHandle(contact.handle).toLowerCase()
+      )
+    )
+  }, [syncedContacts])
   const [activeId, setActiveId] = React.useState<string>("")
   const [messages, setMessages] = React.useState<StoredMessage[]>([])
   const [conversationMessages, setConversationMessages] = React.useState<Map<string, StoredMessage[]>>(new Map())
@@ -151,6 +206,37 @@ export function DashboardLayout() {
   const emojiTheme = theme === "dark" ? Theme.DARK : theme === "system" ? Theme.AUTO : Theme.LIGHT
   const lastCallStateRef = React.useRef<typeof callState | null>(null)
   const lastCallEventKeyRef = React.useRef<string | null>(null)
+  const isSavedContact = React.useCallback(
+    (handle: string) =>
+      savedContactHandles.has(normalizeHandle(handle).toLowerCase()),
+    [savedContactHandles]
+  )
+  const upsertLocalContact = React.useCallback((incoming: Contact) => {
+    const normalized = normalizeContact(incoming)
+    setContacts((current) => {
+      const key = normalized.handle.toLowerCase()
+      const index = current.findIndex(
+        (contact) => contact.handle.toLowerCase() === key
+      )
+      if (index === -1) {
+        return [normalized, ...current]
+      }
+      const next = [...current]
+      next[index] = mergeContact(next[index], normalized)
+      return next
+    })
+    return normalized
+  }, [])
+  const upsertContact = React.useCallback(
+    (incoming: Contact, options?: { syncIfSaved?: boolean }) => {
+      const normalized = upsertLocalContact(incoming)
+      if (options?.syncIfSaved && isSavedContact(normalized.handle)) {
+        void addContact(normalized)
+      }
+      return normalized
+    },
+    [addContact, isSavedContact, upsertLocalContact]
+  )
   const handleVaultMessageSync = React.useCallback(
     async (messageId: string, action: "upsert" | "delete") => {
       if (!masterKey) {
@@ -189,42 +275,46 @@ export function DashboardLayout() {
     onVaultMessageSynced: handleVaultMessageSync,
   })
   React.useEffect(() => {
+    setContacts((current) => mergeContactLists(current, syncedContacts))
+  }, [syncedContacts])
+  React.useEffect(() => {
     if (typeof window === "undefined") {
       return
+    }
+    const handleOpenChat = (event: Event) => {
+      const detail = (event as CustomEvent<OpenContactChatDetail>).detail
+      if (!detail?.handle) {
+        return
+      }
+      setActiveId(detail.handle)
+      setShowRecipientInfo(false)
     }
     const handleUpdate = (event: Event) => {
       const detail = (event as CustomEvent<ContactTransportKeyUpdatedDetail>).detail
       if (!detail?.handle || !detail.publicTransportKey) {
         return
       }
-      setContacts((current) =>
-        current.map((contact) =>
-          contact.handle === detail.handle
-            ? { ...contact, publicTransportKey: detail.publicTransportKey }
-            : contact
-        )
-      )
+      const existing = contacts.find((contact) => contact.handle === detail.handle)
+      const parts = splitHandle(detail.handle)
+      const nextContact = existing
+        ? { ...existing, publicTransportKey: detail.publicTransportKey }
+        : {
+            handle: detail.handle,
+            username: parts?.username ?? detail.handle,
+            host: parts?.host ?? "",
+            publicIdentityKey: "",
+            publicTransportKey: detail.publicTransportKey,
+          }
+      void upsertContact(nextContact, { syncIfSaved: true })
     }
+    window.addEventListener(OPEN_CONTACT_CHAT_EVENT, handleOpenChat)
     window.addEventListener(CONTACT_TRANSPORT_KEY_UPDATED_EVENT, handleUpdate)
     return () => {
+      window.removeEventListener(OPEN_CONTACT_CHAT_EVENT, handleOpenChat)
       window.removeEventListener(CONTACT_TRANSPORT_KEY_UPDATED_EVENT, handleUpdate)
     }
-  }, [])
-  React.useEffect(() => {
-    if (!socket) return
-
-    const handleTransportKeyRotation = (
-      payload: TransportKeyRotationPayload
-    ) => {
-      void applyTransportKeyRotation(payload)
-    }
-
-    socket.on("TRANSPORT_KEY_ROTATED", handleTransportKeyRotation)
-
-    return () => {
-      socket.off("TRANSPORT_KEY_ROTATED", handleTransportKeyRotation)
-    }
-  }, [socket, applyTransportKeyRotation])
+  }, [contacts, upsertContact])
+  // TRANSPORT_KEY_ROTATED is now handled by SyncManager in SyncContext
   React.useEffect(() => {
     if (typeof window === "undefined") {
       return
@@ -494,6 +584,9 @@ export function DashboardLayout() {
 
   const activeContact =
     contacts.find((contact) => contact.handle === activeId) ?? null
+  const isActiveContactSaved = activeContact
+    ? isSavedContact(activeContact.handle)
+    : false
   const activeMessagesRaw = activeContact
     ? messagesByPeer.get(activeContact.handle) ?? []
     : []
@@ -767,7 +860,7 @@ export function DashboardLayout() {
         records.map((record) => decodeContactRecord(record, masterKey))
       )
       const nextContacts = decoded.filter(Boolean) as Contact[]
-      setContacts(nextContacts)
+      setContacts((current) => mergeContactLists(current, nextContacts))
       setContactsLoaded(true)
       console.log("[chat-selection] contacts loaded", nextContacts.map((c) => c.handle))
       // Don't auto-select here - let the conversations effect handle it
@@ -1051,31 +1144,34 @@ export function DashboardLayout() {
     if (!masterKey || !user || visibleMessages.length === 0) {
       return
     }
-    const ownerId = user.id ?? user.handle
-    const pendingSaves: Contact[] = []
+    const pendingSaves = new Map<string, Contact>()
     setContacts((current) => {
       let changed = false
-      const next = [...current]
+      let next = [...current]
       for (const message of visibleMessages) {
+        if (!message.peerHandle) {
+          continue
+        }
+        const normalizedHandle = normalizeHandle(message.peerHandle)
+        const handleKey = normalizedHandle.toLowerCase()
         const index = next.findIndex(
-          (contact) => contact.handle === message.peerHandle
+          (contact) => contact.handle.toLowerCase() === handleKey
         )
         if (index === -1) {
-          const parts = splitHandle(message.peerHandle)
-          const contact = {
-            handle: message.peerHandle,
-            username:
-              message.peerUsername ??
-              parts?.username ??
-              `Unknown ${message.peerHandle.slice(0, 8)}`,
+          const parts = splitHandle(normalizedHandle)
+          const newContact = normalizeContact({
+            handle: normalizedHandle,
+            username: message.peerUsername ?? parts?.username ?? normalizedHandle,
             host: message.peerHost ?? parts?.host ?? "",
             publicIdentityKey: message.peerIdentityKey ?? "",
             publicTransportKey: message.peerTransportKey ?? "",
-            createdAt: message.timestamp,
-          }
-          next.push(contact)
-          pendingSaves.push(contact)
+            createdAt: message.timestamp ?? new Date().toISOString(),
+          })
+          next = [newContact, ...next]
           changed = true
+          if (isSavedContact(newContact.handle)) {
+            pendingSaves.set(handleKey, newContact)
+          }
           continue
         }
         const existing = next[index]
@@ -1098,8 +1194,10 @@ export function DashboardLayout() {
         if (Object.keys(updates).length > 0) {
           const updatedContact = { ...existing, ...updates }
           next[index] = updatedContact
-          pendingSaves.push(updatedContact)
           changed = true
+          if (isSavedContact(updatedContact.handle)) {
+            pendingSaves.set(handleKey, updatedContact)
+          }
         }
       }
       if (!changed) {
@@ -1107,14 +1205,10 @@ export function DashboardLayout() {
       }
       return next
     })
-    if (pendingSaves.length > 0) {
-      void Promise.all(
-        pendingSaves.map((contact) =>
-          saveContactRecord(masterKey, ownerId, contact)
-        )
-      )
+    if (pendingSaves.size > 0) {
+      void Promise.all([...pendingSaves.values()].map((contact) => addContact(contact)))
     }
-  }, [visibleMessages, masterKey, user])
+  }, [visibleMessages, masterKey, user, addContact, isSavedContact])
 
   React.useEffect(() => {
     if (!activeContact) {
@@ -1212,8 +1306,13 @@ export function DashboardLayout() {
       .map((message) => message.id)
     await db.messages.bulkDelete(ids)
     
-    // Delete contact locally
-    await db.contacts.delete(activeContact.handle)
+    await removeContact(activeContact.handle)
+    setContacts((current) =>
+      current.filter(
+        (contact) =>
+          contact.handle.toLowerCase() !== activeContact.handle.toLowerCase()
+      )
+    )
 
     // Delete from server vault
     try {
@@ -1225,10 +1324,9 @@ export function DashboardLayout() {
     }
 
     // Update state
-    setContacts((prev) => prev.filter((c) => c.handle !== activeContact.handle))
     setMessages((prev) => prev.filter((m) => !ids.includes(m.id)))
     setActiveId("")
-  }, [activeContact, user, messages])
+  }, [activeContact, user, messages, removeContact])
 
   const handleBlockUser = React.useCallback(() => {
     if (!activeContact) return
@@ -1242,6 +1340,59 @@ export function DashboardLayout() {
     // Clear active selection since the user is now blocked
     setActiveId("")
   }, [activeContact, blockUser])
+
+  const handleBlockContact = React.useCallback(
+    async (contact: Contact) => {
+      const label = contact.username || contact.handle
+      const confirmed = window.confirm(`Block ${label}?`)
+      if (!confirmed) return
+      await blockUser(contact.handle)
+      setShowRecipientInfo(false)
+      if (activeId === contact.handle) {
+        setActiveId("")
+      }
+    },
+    [blockUser, activeId]
+  )
+
+  const handleRemoveContact = React.useCallback(
+    async (contact: Contact) => {
+      const label = contact.username || contact.handle
+      const confirmed = window.confirm(`Remove ${label} from contacts?`)
+      if (!confirmed) return
+      await removeContact(contact.handle)
+      setShowRecipientInfo(false)
+    },
+    [removeContact]
+  )
+
+  const handleAddContact = React.useCallback(
+    async (contact: Contact) => {
+      let nextContact = contact
+      if (!contact.publicTransportKey || !contact.publicIdentityKey) {
+        try {
+          const entry = await apiFetch<DirectoryEntry>(
+            `/api/directory?handle=${encodeURIComponent(contact.handle)}`
+          )
+          nextContact = {
+            ...contact,
+            publicIdentityKey: entry.public_identity_key ?? contact.publicIdentityKey,
+            publicTransportKey: entry.public_transport_key ?? contact.publicTransportKey,
+          }
+        } catch {
+          // Directory lookup is best-effort; proceed with what we have.
+        }
+      }
+      const savedContact = {
+        ...nextContact,
+        createdAt: nextContact.createdAt ?? new Date().toISOString(),
+      }
+      upsertLocalContact(savedContact)
+      await addContact(savedContact)
+      setShowRecipientInfo(false)
+    },
+    [addContact, upsertLocalContact]
+  )
 
   const handleStartCall = React.useCallback(
     async (callType: "AUDIO" | "VIDEO") => {
@@ -1264,15 +1415,7 @@ export function DashboardLayout() {
               publicIdentityKey: entry.public_identity_key ?? activeContact.publicIdentityKey,
               publicTransportKey: entry.public_transport_key,
             }
-            setContacts((current) =>
-              current.map((contact) =>
-                contact.handle === updatedContact.handle ? updatedContact : contact
-              )
-            )
-            if (masterKey && user?.handle) {
-              const ownerId = user.id ?? user.handle
-              void saveContactRecord(masterKey, ownerId, updatedContact)
-            }
+            void upsertContact(updatedContact, { syncIfSaved: true })
           }
         }
       } catch {
@@ -1287,7 +1430,7 @@ export function DashboardLayout() {
       resumeAudioContext()
       void initiateCall(activeContact.handle, publicTransportKey, publicIdentityKey, callType)
     },
-    [activeContact, initiateCall, masterKey, user]
+    [activeContact, initiateCall, upsertContact]
   )
 
   const buildCallEventText = React.useCallback(
@@ -1512,30 +1655,8 @@ export function DashboardLayout() {
           publicIdentityKey: entry.public_identity_key,
           publicTransportKey: entry.public_transport_key,
         }
-        if (masterKey && user?.handle) {
-          const ownerId = user.id ?? user.handle
-          await saveContactRecord(masterKey, ownerId, nextContact)
-        }
-        setContacts((current) => {
-          const index = current.findIndex(
-            (contact) => contact.handle === nextContact.handle
-          )
-          let next = current
-          if (index >= 0) {
-            next = [...current]
-            next[index] = {
-              ...current[index],
-              username: nextContact.username,
-              host: nextContact.host,
-              publicIdentityKey: nextContact.publicIdentityKey,
-              publicTransportKey: nextContact.publicTransportKey,
-            }
-          } else {
-            next = [nextContact, ...current]
-          }
-          return next
-        })
-        setActiveId(nextContact.handle)
+        const resolvedContact = upsertContact(nextContact, { syncIfSaved: true })
+        setActiveId(resolvedContact.handle)
       } catch (error) {
         setStartError(
           error instanceof Error ? error.message : "Unable to start chat"
@@ -1544,7 +1665,7 @@ export function DashboardLayout() {
         setIsBusy(false)
       }
     },
-    [masterKey, user]
+    [upsertContact]
   )
 
   const handleAttachFile = React.useCallback(
@@ -1994,7 +2115,7 @@ export function DashboardLayout() {
           recipient_handle: activeContact.handle,
           encrypted_blob: encryptedBlob,
           message_id: targetMessageId,
-          event_type: "edit",
+          event_id: editEventId,
           sender_vault_blob: encryptedLocal.ciphertext,
           sender_vault_iv: encryptedLocal.iv,
           sender_vault_signature_verified: true,
@@ -2140,7 +2261,7 @@ export function DashboardLayout() {
             recipient_handle: activeContact.handle,
             encrypted_blob: encryptedBlob,
             message_id: targetMessageId,
-            event_type: "delete",
+            event_id: deleteEventId,
             sender_vault_blob: encryptedLocal.ciphertext,
             sender_vault_iv: encryptedLocal.iv,
             sender_vault_signature_verified: true,
@@ -2283,8 +2404,7 @@ export function DashboardLayout() {
             recipient_handle: activeContact.handle,
             encrypted_blob: encryptedBlob,
             message_id: targetMessageId,
-            event_type: "reaction",
-            reaction_emoji: emoji,
+            event_id: reactionEventId,
             sender_vault_blob: encryptedLocal.ciphertext,
             sender_vault_iv: encryptedLocal.iv,
             sender_vault_signature_verified: true,
@@ -2371,6 +2491,9 @@ export function DashboardLayout() {
         contact={activeContact}
         open={showRecipientInfo}
         onOpenChange={setShowRecipientInfo}
+        onBlockUser={handleBlockContact}
+        onAddContact={!isActiveContactSaved ? handleAddContact : undefined}
+        onRemoveContact={isActiveContactSaved ? handleRemoveContact : undefined}
       />
       <ImagePreviewDialog 
         src={previewImage} 
@@ -2454,6 +2577,12 @@ export function DashboardLayout() {
           onExportChat={handleExportChat}
           onDeleteChat={handleDeleteChat}
           onBlockUser={handleBlockUser}
+          onAddContact={
+            !isActiveContactSaved && activeContact
+              ? () => void handleAddContact(activeContact)
+              : undefined
+          }
+          showAddContact={!isActiveContactSaved}
           onStartCall={handleStartCall}
           isCallDisabled={callState.status !== "idle" || externalCallActive}
         />

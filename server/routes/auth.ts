@@ -50,6 +50,12 @@ const rotateTransportKeySchema = z.object({
   public_transport_key: z.string().min(1),
   encrypted_transport_key: z.string().min(1),
   encrypted_transport_iv: z.string().min(1),
+  rotated_at: z.number().int().optional(),
+});
+
+const encryptedContactsSchema = z.object({
+  ciphertext: z.string().min(1),
+  iv: z.string().min(1),
 });
 
 const opaqueRegisterStartSchema = z.object({
@@ -252,7 +258,13 @@ export const createAuthRouter = (prisma: PrismaClient, io?: SocketIOServer) => {
       data,
       select: { show_typing_indicator: true, send_read_receipts: true },
     });
-    
+
+    // Notify other devices of settings change
+    io?.to(req.user.id).emit("SETTINGS_UPDATED", {
+      showTypingIndicator: user.show_typing_indicator,
+      sendReadReceipts: user.send_read_receipts,
+    });
+
     return res.json({
       showTypingIndicator: user.show_typing_indicator,
       sendReadReceipts: user.send_read_receipts,
@@ -300,6 +312,45 @@ export const createAuthRouter = (prisma: PrismaClient, io?: SocketIOServer) => {
     return res.json({ success: true });
   });
 
+  // Encrypted contacts endpoints (minimal metadata - server only sees encrypted blob)
+  router.get("/contacts", authenticateToken, async (req: Request, res: Response) => {
+    if (!req.user) return res.status(401).json({ error: "Unauthorized" });
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.id },
+      select: { encrypted_contacts: true, encrypted_contacts_iv: true },
+    });
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    if (!user.encrypted_contacts || !user.encrypted_contacts_iv) {
+      return res.json({ ciphertext: null, iv: null });
+    }
+
+    return res.json({
+      ciphertext: user.encrypted_contacts,
+      iv: user.encrypted_contacts_iv,
+    });
+  });
+
+  router.put("/contacts", authenticateToken, async (req: Request, res: Response) => {
+    if (!req.user) return res.status(401).json({ error: "Unauthorized" });
+    const parsed = encryptedContactsSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: "Invalid request" });
+
+    const { ciphertext, iv } = parsed.data;
+
+    await prisma.user.update({
+      where: { id: req.user.id },
+      data: {
+        encrypted_contacts: ciphertext,
+        encrypted_contacts_iv: iv,
+      },
+    });
+
+    io?.to(req.user.id).emit("CONTACTS_UPDATED", { ciphertext, iv });
+
+    return res.json({ success: true });
+  });
+
   router.patch("/keys/transport", authenticateToken, async (req: Request, res: Response) => {
     if (!req.user) return res.status(401).json({ error: "Unauthorized" });
     const parsed = rotateTransportKeySchema.safeParse(req.body);
@@ -309,7 +360,9 @@ export const createAuthRouter = (prisma: PrismaClient, io?: SocketIOServer) => {
       public_transport_key,
       encrypted_transport_key,
       encrypted_transport_iv,
+      rotated_at,
     } = parsed.data;
+    const rotatedAt = typeof rotated_at === "number" ? rotated_at : Date.now();
 
     const existing = await prisma.user.findUnique({
       where: { id: req.user.id },
@@ -333,9 +386,10 @@ export const createAuthRouter = (prisma: PrismaClient, io?: SocketIOServer) => {
       public_transport_key,
       encrypted_transport_key,
       encrypted_transport_iv,
+      rotated_at: rotatedAt,
     });
 
-    return res.json({ ok: true });
+    return res.json({ ok: true, rotated_at: rotatedAt });
   });
 
   router.delete("/account", authenticateToken, async (req: Request, res: Response) => {
@@ -696,6 +750,12 @@ export const createAuthRouter = (prisma: PrismaClient, io?: SocketIOServer) => {
     }
 
     await prisma.session.delete({ where: { id } });
+
+    // Notify other devices of session deletion
+    io?.to(req.user.id).emit("SESSION_DELETED", {
+      sessionId: id,
+      deletedAt: new Date().toISOString(),
+    });
 
     return res.json({ ok: true });
   });
@@ -1152,6 +1212,14 @@ export const createAuthRouter = (prisma: PrismaClient, io?: SocketIOServer) => {
         },
       });
 
+      // Notify other devices of new passkey
+      io?.to(req.user.id).emit("PASSKEY_ADDED", {
+        id: credential.id,
+        credentialId: credential.credential_id,
+        name: credential.name,
+        createdAt: credential.created_at.toISOString(),
+      });
+
       return res.status(201).json({
         id: credential.id,
         credentialId: credential.credential_id,
@@ -1250,6 +1318,11 @@ export const createAuthRouter = (prisma: PrismaClient, io?: SocketIOServer) => {
           user_id: req.user.id,
           credential_id: target_credential_id,
         },
+      });
+
+      // Notify other devices of passkey removal
+      io?.to(req.user.id).emit("PASSKEY_REMOVED", {
+        credentialId: target_credential_id,
       });
 
       return res.json({ ok: true });

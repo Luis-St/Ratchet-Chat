@@ -17,6 +17,7 @@ const DEFAULT_SETTINGS: Settings = {
 type SettingsContextValue = {
   settings: Settings
   updateSettings: (updates: Partial<Settings>) => void
+  applyRemoteSettings: (updates: Partial<Settings>) => void
 }
 
 const SettingsContext = React.createContext<SettingsContextValue | undefined>(undefined)
@@ -69,7 +70,7 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
   const updateSettings = React.useCallback(
     async (updates: Partial<Settings>) => {
       if (!user?.id) return
-      
+
       // Optimistic update
       setSettings((prev) => {
         const next = { ...prev, ...updates }
@@ -90,7 +91,23 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
     [user?.id]
   )
 
-  const value = React.useMemo(() => ({ settings, updateSettings }), [settings, updateSettings])
+  // Apply settings from remote sync (no server call needed)
+  const applyRemoteSettings = React.useCallback(
+    (updates: Partial<Settings>) => {
+      if (!user?.id) return
+      setSettings((prev) => {
+        const next = { ...prev, ...updates }
+        localStorage.setItem(`ratchet_settings_${user.id}`, JSON.stringify(next))
+        return next
+      })
+    },
+    [user?.id]
+  )
+
+  const value = React.useMemo(
+    () => ({ settings, updateSettings, applyRemoteSettings }),
+    [settings, updateSettings, applyRemoteSettings]
+  )
 
   return (
     <SettingsContext.Provider value={value}>

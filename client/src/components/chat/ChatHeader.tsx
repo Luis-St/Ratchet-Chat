@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { Ban, Download, MoreVertical, Phone, Search, Trash2, Video } from "lucide-react"
+import { Ban, Download, MoreVertical, Phone, Search, Trash2, UserPlus, Video } from "lucide-react"
 
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
@@ -27,6 +27,8 @@ type ChatHeaderProps = {
   onExportChat: () => void
   onDeleteChat: () => void
   onBlockUser: () => void
+  onAddContact?: () => void
+  showAddContact?: boolean
   onStartCall?: (type: "AUDIO" | "VIDEO") => void
   isCallDisabled?: boolean
 }
@@ -43,6 +45,8 @@ export function ChatHeader({
   onExportChat,
   onDeleteChat,
   onBlockUser,
+  onAddContact,
+  showAddContact = false,
   onStartCall,
   isCallDisabled = false,
 }: ChatHeaderProps) {
@@ -104,6 +108,17 @@ export function ChatHeader({
             </Button>
           </>
         )}
+        {activeContact && onAddContact && showAddContact ? (
+          <Button
+            variant="ghost"
+            size="icon"
+            className="text-muted-foreground"
+            onClick={onAddContact}
+            title="Add to contacts"
+          >
+            <UserPlus className="h-4 w-4" />
+          </Button>
+        ) : null}
         {isChatSearchOpen ? (
           <div className="relative w-40 md:w-60">
             <Input

@@ -25,6 +25,7 @@ import { Switch } from "@/components/ui/switch"
 import { useAuth, type SessionInfo, type PasskeyInfo } from "@/context/AuthContext"
 import { useBlock } from "@/context/BlockContext"
 import { useCall } from "@/context/CallContext"
+import { useSync } from "@/context/SyncContext"
 import { useSettings } from "@/hooks/useSettings"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
@@ -87,6 +88,7 @@ export function SettingsDialog({
   const { blockedUsers, blockedServers, blockUser, unblockUser, blockServer, unblockServer } = useBlock()
   const { callState } = useCall()
   const { settings, updateSettings } = useSettings()
+  const { subscribe } = useSync()
   const isInActiveCall = callState.status !== "idle" && callState.status !== "ended"
   const [showKey, setShowKey] = React.useState(false)
   const [deleteConfirm, setDeleteConfirm] = React.useState("")
@@ -144,6 +146,14 @@ export function SettingsDialog({
       setLoadingTransportRotatedAt(false)
     }
   }, [getTransportKeyRotatedAt])
+
+  // Subscribe to transport key rotation events to update timestamp
+  React.useEffect(() => {
+    const unsubscribe = subscribe("TRANSPORT_KEY_ROTATED", () => {
+      void loadTransportRotation()
+    })
+    return unsubscribe
+  }, [subscribe, loadTransportRotation])
 
   const loadPasskeys = React.useCallback(async () => {
     setLoadingPasskeys(true)

@@ -3,7 +3,7 @@
 import * as React from "react"
 import {
   BadgeCheck,
-  Bell,
+  Users,
   Check,
   ChevronsUpDown,
   CreditCard,
@@ -37,6 +37,7 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar"
 import { SettingsDialog } from "@/components/SettingsDialog"
+import { ContactsDialog } from "@/components/ContactsDialog"
 
 export function NavUser({
   user,
@@ -52,10 +53,12 @@ export function NavUser({
   const { isMobile } = useSidebar()
   const { setTheme, theme } = useTheme()
   const [showSettings, setShowSettings] = React.useState(false)
+  const [showContacts, setShowContacts] = React.useState(false)
 
   return (
     <>
       <SettingsDialog open={showSettings} onOpenChange={setShowSettings} />
+      <ContactsDialog open={showContacts} onOpenChange={setShowContacts} />
       <SidebarMenu>
         <SidebarMenuItem>
           <DropdownMenu>
@@ -103,9 +106,9 @@ export function NavUser({
                   <Settings />
                   Settings
                 </DropdownMenuItem>
-                <DropdownMenuItem>
-                  <Bell />
-                  Notifications
+                <DropdownMenuItem onClick={() => setShowContacts(true)}>
+                  <Users />
+                  Contacts
                 </DropdownMenuItem>
               </DropdownMenuGroup>
               <DropdownMenuSeparator />

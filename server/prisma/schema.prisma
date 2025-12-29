@@ -23,6 +23,8 @@ model User {
   send_read_receipts         Boolean             @default(true)
   encrypted_block_list       String?             @db.Text
   encrypted_block_list_iv    String?
+  encrypted_contacts         String?             @db.Text
+  encrypted_contacts_iv      String?
   created_at                 DateTime            @default(now())
   incoming_queue             IncomingQueue[]     @relation("IncomingRecipient")
   vault_messages             MessageVault[]      @relation("VaultOwner")
@@ -68,15 +70,14 @@ model IncomingQueue {
   recipient_id   String   @db.Uuid
   sender_handle  String?
   message_id     String?  @db.Uuid
-  event_type     String   @default("message")
-  reaction_emoji String?
+  // Note: event_type and reaction_emoji removed for privacy - server should not know what actions users perform
   encrypted_blob String   @db.Text
   iv             String?
   created_at     DateTime @default(now())
   recipient      User     @relation("IncomingRecipient", fields: [recipient_id], references: [id], onDelete: Cascade)
 
   @@index([recipient_id])
-  @@index([recipient_id, message_id, event_type, sender_handle])
+  @@index([recipient_id, sender_handle])
 }
 
 model MessageVault {

@@ -5,3 +5,9 @@ export type ContactTransportKeyUpdatedDetail = {
   handle: string
   publicTransportKey: string
 }
+
+export const OPEN_CONTACT_CHAT_EVENT = "ratchet-open-contact-chat"
+
+export type OpenContactChatDetail = {
+  handle: string
+}
