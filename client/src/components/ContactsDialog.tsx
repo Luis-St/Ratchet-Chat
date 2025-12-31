@@ -4,7 +4,13 @@ import * as React from "react"
 import { Ban, MessageSquare, Plus, Trash2, Search, Users } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import {
+  ResponsiveModal,
+  ResponsiveModalContent,
+  ResponsiveModalDescription,
+  ResponsiveModalHeader,
+  ResponsiveModalTitle,
+} from "@/components/ui/responsive-modal"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Switch } from "@/components/ui/switch"
@@ -215,17 +221,17 @@ export function ContactsDialog({
         onBlockUser={handleBlockContact}
         onRemoveContact={handleRemoveContact}
       />
-      <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent className="sm:max-w-[640px] max-h-[80vh] grid-rows-[auto_auto_1fr] overflow-hidden">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
+      <ResponsiveModal open={open} onOpenChange={onOpenChange}>
+        <ResponsiveModalContent className="sm:max-w-[640px] max-h-[80vh] grid-rows-[auto_auto_1fr] overflow-hidden">
+          <ResponsiveModalHeader>
+            <ResponsiveModalTitle className="flex items-center gap-2">
               <Users className="h-5 w-5 text-emerald-600" />
               Contacts
-            </DialogTitle>
-            <DialogDescription>
+            </ResponsiveModalTitle>
+            <ResponsiveModalDescription>
               Manage saved handles and quickly view identity details.
-            </DialogDescription>
-          </DialogHeader>
+            </ResponsiveModalDescription>
+          </ResponsiveModalHeader>
 
           <div className="space-y-3">
             <div className="flex flex-wrap items-center gap-2">
@@ -393,8 +399,8 @@ export function ContactsDialog({
               </button>
             </div>
           </div>
-        </DialogContent>
-      </Dialog>
+        </ResponsiveModalContent>
+      </ResponsiveModal>
     </>
   )
 }

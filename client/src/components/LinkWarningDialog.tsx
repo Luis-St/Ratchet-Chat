@@ -4,13 +4,13 @@ import * as React from "react"
 import { ExternalLink } from "lucide-react"
 
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog"
+  ResponsiveModal,
+  ResponsiveModalContent,
+  ResponsiveModalDescription,
+  ResponsiveModalFooter,
+  ResponsiveModalHeader,
+  ResponsiveModalTitle,
+} from "@/components/ui/responsive-modal"
 import { Button } from "@/components/ui/button"
 
 export function LinkWarningDialog({
@@ -37,14 +37,14 @@ export function LinkWarningDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[425px]">
-        <DialogHeader>
-          <DialogTitle>External Link Warning</DialogTitle>
-          <DialogDescription>
+    <ResponsiveModal open={open} onOpenChange={onOpenChange}>
+      <ResponsiveModalContent className="sm:max-w-[425px]">
+        <ResponsiveModalHeader>
+          <ResponsiveModalTitle>External Link Warning</ResponsiveModalTitle>
+          <ResponsiveModalDescription>
             You are about to leave Ratchet Chat.
-          </DialogDescription>
-        </DialogHeader>
+          </ResponsiveModalDescription>
+        </ResponsiveModalHeader>
         <div className="flex flex-col gap-4 py-4">
           <div className="rounded-md bg-muted p-3 text-sm break-all flex items-center gap-2">
             <ExternalLink className="h-4 w-4 shrink-0 text-muted-foreground" />
@@ -57,15 +57,15 @@ export function LinkWarningDialog({
             {url}
           </p>
         </div>
-        <DialogFooter>
+        <ResponsiveModalFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
           <Button onClick={handleContinue}>
             Continue
           </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        </ResponsiveModalFooter>
+      </ResponsiveModalContent>
+    </ResponsiveModal>
   )
 }

@@ -2,7 +2,14 @@
 
 import * as React from "react"
 
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
+import {
+  ResponsiveModal,
+  ResponsiveModalContent,
+  ResponsiveModalDescription,
+  ResponsiveModalHeader,
+  ResponsiveModalTitle,
+  ResponsiveModalTrigger,
+} from "@/components/ui/responsive-modal"
 import { apiFetch } from "@/lib/api"
 import { cn } from "@/lib/utils"
 import { getInstanceHost } from "@/lib/handles"
@@ -82,13 +89,13 @@ export function AppInfoDialog({ children }: { children: React.ReactNode }) {
       : "text-muted-foreground"
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>{children}</DialogTrigger>
-      <DialogContent className="sm:max-w-[480px]">
-        <DialogHeader>
-          <DialogTitle>Ratchet Chat</DialogTitle>
-          <DialogDescription>End-to-end encrypted client status.</DialogDescription>
-        </DialogHeader>
+    <ResponsiveModal open={open} onOpenChange={setOpen}>
+      <ResponsiveModalTrigger asChild>{children}</ResponsiveModalTrigger>
+      <ResponsiveModalContent className="sm:max-w-[480px]">
+        <ResponsiveModalHeader>
+          <ResponsiveModalTitle>Ratchet Chat</ResponsiveModalTitle>
+          <ResponsiveModalDescription>End-to-end encrypted client status.</ResponsiveModalDescription>
+        </ResponsiveModalHeader>
         <div className="space-y-4">
           <div className="rounded-lg border bg-muted/50 p-4">
             <div className="text-sm font-semibold">Version</div>
@@ -139,7 +146,7 @@ export function AppInfoDialog({ children }: { children: React.ReactNode }) {
             ) : null}
           </div>
         </div>
-      </DialogContent>
-    </Dialog>
+      </ResponsiveModalContent>
+    </ResponsiveModal>
   )
 }

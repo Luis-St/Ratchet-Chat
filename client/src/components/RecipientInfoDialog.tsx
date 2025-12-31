@@ -5,12 +5,12 @@ import { Ban, Copy, Eye, EyeOff, Fingerprint, Shield, Trash2, UserPlus } from "l
 
 import { Button } from "@/components/ui/button"
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog"
+  ResponsiveModal,
+  ResponsiveModalContent,
+  ResponsiveModalDescription,
+  ResponsiveModalHeader,
+  ResponsiveModalTitle,
+} from "@/components/ui/responsive-modal"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
@@ -89,14 +89,14 @@ export function RecipientInfoDialog({
   ])
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[425px]">
-        <DialogHeader>
-          <DialogTitle>Contact Info</DialogTitle>
-          <DialogDescription>
+    <ResponsiveModal open={open} onOpenChange={onOpenChange}>
+      <ResponsiveModalContent className="sm:max-w-[425px]">
+        <ResponsiveModalHeader>
+          <ResponsiveModalTitle>Contact Info</ResponsiveModalTitle>
+          <ResponsiveModalDescription>
             Identity details for this secure session.
-          </DialogDescription>
-        </DialogHeader>
+          </ResponsiveModalDescription>
+        </ResponsiveModalHeader>
         
         <div className="flex flex-col items-center gap-4 py-4">
           <Avatar className="h-24 w-24">
@@ -240,7 +240,7 @@ export function RecipientInfoDialog({
             </div>
           )}
         </div>
-      </DialogContent>
-    </Dialog>
+      </ResponsiveModalContent>
+    </ResponsiveModal>
   )
 }

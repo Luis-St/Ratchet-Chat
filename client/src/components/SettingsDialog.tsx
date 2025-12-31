@@ -8,12 +8,12 @@ import { cn } from "@/lib/utils"
 import { apiFetch } from "@/lib/api"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog"
+  ResponsiveModal,
+  ResponsiveModalContent,
+  ResponsiveModalDescription,
+  ResponsiveModalHeader,
+  ResponsiveModalTitle,
+} from "@/components/ui/responsive-modal"
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -1645,13 +1645,13 @@ export function SettingsDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent
+    <ResponsiveModal open={open} onOpenChange={onOpenChange}>
+      <ResponsiveModalContent
         className="sm:max-w-[640px] max-h-[85vh] grid-rows-[auto_auto_1fr] overflow-hidden"
         onOpenAutoFocus={(e) => e.preventDefault()}
       >
-        <DialogHeader className="space-y-3">
-          <DialogTitle className="sr-only">Settings</DialogTitle>
+        <ResponsiveModalHeader className="space-y-3">
+          <ResponsiveModalTitle className="sr-only">Settings</ResponsiveModalTitle>
           <Breadcrumb>
             <BreadcrumbList className="text-base sm:text-xl font-medium">
               <BreadcrumbItem>
@@ -1679,8 +1679,8 @@ export function SettingsDialog({
               ) : null}
             </BreadcrumbList>
           </Breadcrumb>
-          <DialogDescription>{dialogDescription}</DialogDescription>
-        </DialogHeader>
+          <ResponsiveModalDescription>{dialogDescription}</ResponsiveModalDescription>
+        </ResponsiveModalHeader>
         <Separator />
         <div className="min-h-0">
           {activePage ? (
@@ -1728,7 +1728,7 @@ export function SettingsDialog({
             </ScrollArea>
           )}
         </div>
-      </DialogContent>
-    </Dialog>
+      </ResponsiveModalContent>
+    </ResponsiveModal>
   )
 }
