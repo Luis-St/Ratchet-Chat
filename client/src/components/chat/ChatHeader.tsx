@@ -1,7 +1,19 @@
 "use client"
 
 import * as React from "react"
-import { Ban, BellOff, BellRing, Download, MoreVertical, Phone, Search, Trash2, UserPlus, Video } from "lucide-react"
+import {
+  Ban,
+  BellOff,
+  BellRing,
+  Download,
+  MoreVertical,
+  Phone,
+  Search,
+  Trash2,
+  UserPlus,
+  Video,
+  X,
+} from "lucide-react"
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
@@ -67,170 +79,319 @@ export function ChatHeader({
     : "Select a chat"
   const initials = activeContact ? getContactInitials(activeContact) : ""
 
+  const callMenu = onStartCall ? (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="text-muted-foreground"
+          disabled={!activeContact || isCallDisabled}
+          title="Start call"
+        >
+          <Phone className="h-4 w-4" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <DropdownMenuItem
+          onClick={() => onStartCall("AUDIO")}
+          disabled={!activeContact || isCallDisabled}
+        >
+          <Phone className="mr-2 h-4 w-4" />
+          <span>Voice call</span>
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          onClick={() => onStartCall("VIDEO")}
+          disabled={!activeContact || isCallDisabled}
+        >
+          <Video className="mr-2 h-4 w-4" />
+          <span>Video call</span>
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  ) : null
+  const callMenuMobile = onStartCall ? (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          className="text-muted-foreground"
+          disabled={!activeContact || isCallDisabled}
+          title="Start call"
+        >
+          <Phone className="h-4 w-4" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <DropdownMenuItem
+          onClick={() => onStartCall("AUDIO")}
+          disabled={!activeContact || isCallDisabled}
+        >
+          <Phone className="mr-2 h-4 w-4" />
+          <span>Voice call</span>
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          onClick={() => onStartCall("VIDEO")}
+          disabled={!activeContact || isCallDisabled}
+        >
+          <Video className="mr-2 h-4 w-4" />
+          <span>Video call</span>
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  ) : null
+  const actionButtons = <>{callMenu}</>
+
   return (
-    <header className="flex flex-none items-center gap-3 border-b bg-background/85 px-5 py-4 backdrop-blur">
-      <SidebarTrigger className="-ml-1" />
-      <div
-        className="flex flex-1 items-center gap-3 cursor-pointer transition-opacity hover:opacity-80 -ml-2 pl-2 rounded-md py-1 hover:bg-muted/50"
-        onClick={() => activeContact && onShowRecipientInfo()}
-      >
-        {activeContact && (
-          <Avatar className="h-10 w-10 border">
-            {activeContact.avatar_filename ? (
-              <AvatarImage src={`${process.env.NEXT_PUBLIC_API_URL}/uploads/avatars/${activeContact.avatar_filename}`} />
-            ) : null}
-            <AvatarFallback>
-              {initials}
-            </AvatarFallback>
-          </Avatar>
-        )}
-        <div className="flex-1">
-          <p className="text-sm font-semibold">
-            {displayName}
-          </p>
-          {activeContact ? (
-            activeContact.handle && typingStatus[activeContact.handle] ? (
-              <p className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 animate-pulse">
-                Typing...
-              </p>
-            ) : (
-              <p className="text-xs text-muted-foreground">Encrypted session</p>
-            )
-          ) : (
-            <p className="text-xs text-muted-foreground">
-              Start by adding a username on the left.
-            </p>
+    <header className="flex flex-none flex-col gap-3 border-b bg-background/85 px-3 py-3 backdrop-blur sm:flex-row sm:items-center sm:gap-3 sm:px-5 sm:py-4">
+      <div className="flex w-full items-center gap-3">
+        <SidebarTrigger className="-ml-1" />
+        <div
+          className="flex min-w-0 flex-1 items-center gap-3 cursor-pointer transition-opacity hover:opacity-80 -ml-2 pl-2 rounded-md py-1 hover:bg-muted/50"
+          onClick={() => activeContact && onShowRecipientInfo()}
+        >
+          {activeContact && (
+            <Avatar className="h-10 w-10 border">
+              {activeContact.avatar_filename ? (
+                <AvatarImage src={`${process.env.NEXT_PUBLIC_API_URL}/uploads/avatars/${activeContact.avatar_filename}`} />
+              ) : null}
+              <AvatarFallback>
+                {initials}
+              </AvatarFallback>
+            </Avatar>
           )}
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-sm font-semibold">
+              {displayName}
+            </p>
+            {activeContact ? (
+              activeContact.handle && typingStatus[activeContact.handle] ? (
+                <p className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 animate-pulse">
+                  Typing...
+                </p>
+              ) : (
+                <p className="text-xs text-muted-foreground">Encrypted session</p>
+              )
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Start by adding a username on the left.
+              </p>
+            )}
+          </div>
+        </div>
+        <div className="ml-auto flex items-center gap-1 sm:hidden">
+          {callMenuMobile}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="icon-sm" className="text-muted-foreground">
+                <MoreVertical />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              {activeContact && onAddContact && showAddContact ? (
+                <>
+                  <DropdownMenuItem onClick={onAddContact}>
+                    <UserPlus className="mr-2 h-4 w-4" />
+                    <span>Add to contacts</span>
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                </>
+              ) : null}
+              <DropdownMenuItem
+                onClick={onChatSearchOpen}
+                disabled={!activeContact}
+              >
+                <Search className="mr-2 h-4 w-4" />
+                <span>Search in chat</span>
+              </DropdownMenuItem>
+              {activeContact && onMute && onUnmute && (
+                <>
+                  <DropdownMenuSeparator />
+                  {isMuted ? (
+                    <DropdownMenuItem onClick={onUnmute}>
+                      <BellRing className="mr-2 h-4 w-4" />
+                      <span>Unmute Notifications</span>
+                    </DropdownMenuItem>
+                  ) : (
+                    <DropdownMenuSub>
+                      <DropdownMenuSubTrigger>
+                        <BellOff className="mr-2 h-4 w-4" />
+                        <span>Mute Notifications</span>
+                      </DropdownMenuSubTrigger>
+                      <DropdownMenuSubContent>
+                        <DropdownMenuItem onClick={() => onMute("1h")}>
+                          1 hour
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => onMute("8h")}>
+                          8 hours
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => onMute("24h")}>
+                          24 hours
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => onMute("1w")}>
+                          1 week
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => onMute("forever")}>
+                          Forever
+                        </DropdownMenuItem>
+                      </DropdownMenuSubContent>
+                    </DropdownMenuSub>
+                  )}
+                </>
+              )}
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={onExportChat}>
+                <Download className="mr-2 h-4 w-4" />
+                <span>Export Chat</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={onBlockUser}
+                className="text-destructive focus:text-destructive"
+              >
+                <Ban className="mr-2 h-4 w-4" />
+                <span>Block User</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={onDeleteChat}
+                className="text-destructive focus:text-destructive"
+              >
+                <Trash2 className="mr-2 h-4 w-4" />
+                <span>Delete Chat</span>
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </div>
-      <div className="ml-auto flex items-center gap-2">
-        {onStartCall && (
-          <>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="text-muted-foreground"
-              onClick={() => onStartCall("AUDIO")}
-              disabled={!activeContact || isCallDisabled}
-              title="Start voice call"
-            >
-              <Phone className="h-4 w-4" />
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="text-muted-foreground"
-              onClick={() => onStartCall("VIDEO")}
-              disabled={!activeContact || isCallDisabled}
-              title="Start video call"
-            >
-              <Video className="h-4 w-4" />
-            </Button>
-          </>
-        )}
-        {activeContact && onAddContact && showAddContact ? (
-          <Button
-            variant="ghost"
-            size="icon"
-            className="text-muted-foreground"
-            onClick={onAddContact}
-            title="Add to contacts"
-          >
-            <UserPlus className="h-4 w-4" />
-          </Button>
-        ) : null}
+
+      <div className="ml-auto hidden items-center gap-2 sm:flex">
         {isChatSearchOpen ? (
-          <div className="relative w-40 md:w-60">
+          <div className="relative w-64 lg:w-80">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
               placeholder="Search in chat..."
-              className="h-8 pr-8"
+              className="h-9 pl-9 pr-10"
               value={chatSearchQuery}
               onChange={(e) => onChatSearchQueryChange(e.target.value)}
               autoFocus
             />
             <Button
               variant="ghost"
-              size="icon"
-              className="absolute right-0 top-0 h-8 w-8 text-muted-foreground hover:bg-transparent"
+              size="icon-sm"
+              className="absolute right-1 top-1/2 -translate-y-1/2 text-muted-foreground"
               onClick={onChatSearchClose}
             >
-              <Search className="h-4 w-4 rotate-45" />
+              <X className="h-4 w-4" />
             </Button>
           </div>
         ) : (
-          <Button
-            variant="ghost"
-            size="icon"
-            className="text-muted-foreground"
-            onClick={onChatSearchOpen}
-            disabled={!activeContact}
-          >
-            <Search />
-          </Button>
-        )}
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon" className="text-muted-foreground">
-              <MoreVertical />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            {activeContact && onMute && onUnmute && (
-              <>
-                {isMuted ? (
-                  <DropdownMenuItem onClick={onUnmute}>
-                    <BellRing className="mr-2 h-4 w-4" />
-                    <span>Unmute Notifications</span>
-                  </DropdownMenuItem>
-                ) : (
-                  <DropdownMenuSub>
-                    <DropdownMenuSubTrigger>
-                      <BellOff className="mr-2 h-4 w-4" />
-                      <span>Mute Notifications</span>
-                    </DropdownMenuSubTrigger>
-                    <DropdownMenuSubContent>
-                      <DropdownMenuItem onClick={() => onMute("1h")}>
-                        1 hour
+          <>
+            {actionButtons}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="icon" className="text-muted-foreground">
+                  <MoreVertical />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                {activeContact && onAddContact && showAddContact ? (
+                  <>
+                    <DropdownMenuItem onClick={onAddContact}>
+                      <UserPlus className="mr-2 h-4 w-4" />
+                      <span>Add to contacts</span>
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                  </>
+                ) : null}
+                <DropdownMenuItem
+                  onClick={onChatSearchOpen}
+                  disabled={!activeContact}
+                >
+                  <Search className="mr-2 h-4 w-4" />
+                  <span>Search in chat</span>
+                </DropdownMenuItem>
+                {activeContact && onMute && onUnmute && (
+                  <>
+                    <DropdownMenuSeparator />
+                    {isMuted ? (
+                      <DropdownMenuItem onClick={onUnmute}>
+                        <BellRing className="mr-2 h-4 w-4" />
+                        <span>Unmute Notifications</span>
                       </DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => onMute("8h")}>
-                        8 hours
-                      </DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => onMute("24h")}>
-                        24 hours
-                      </DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => onMute("1w")}>
-                        1 week
-                      </DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => onMute("forever")}>
-                        Forever
-                      </DropdownMenuItem>
-                    </DropdownMenuSubContent>
-                  </DropdownMenuSub>
+                    ) : (
+                      <DropdownMenuSub>
+                        <DropdownMenuSubTrigger>
+                          <BellOff className="mr-2 h-4 w-4" />
+                          <span>Mute Notifications</span>
+                        </DropdownMenuSubTrigger>
+                        <DropdownMenuSubContent>
+                          <DropdownMenuItem onClick={() => onMute("1h")}>
+                            1 hour
+                          </DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => onMute("8h")}>
+                            8 hours
+                          </DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => onMute("24h")}>
+                            24 hours
+                          </DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => onMute("1w")}>
+                            1 week
+                          </DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => onMute("forever")}>
+                            Forever
+                          </DropdownMenuItem>
+                        </DropdownMenuSubContent>
+                      </DropdownMenuSub>
+                    )}
+                  </>
                 )}
                 <DropdownMenuSeparator />
-              </>
-            )}
-            <DropdownMenuItem onClick={onExportChat}>
-              <Download className="mr-2 h-4 w-4" />
-              <span>Export Chat</span>
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              onClick={onBlockUser}
-              className="text-destructive focus:text-destructive"
-            >
-              <Ban className="mr-2 h-4 w-4" />
-              <span>Block User</span>
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              onClick={onDeleteChat}
-              className="text-destructive focus:text-destructive"
-            >
-              <Trash2 className="mr-2 h-4 w-4" />
-              <span>Delete Chat</span>
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+                <DropdownMenuItem onClick={onExportChat}>
+                  <Download className="mr-2 h-4 w-4" />
+                  <span>Export Chat</span>
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={onBlockUser}
+                  className="text-destructive focus:text-destructive"
+                >
+                  <Ban className="mr-2 h-4 w-4" />
+                  <span>Block User</span>
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={onDeleteChat}
+                  className="text-destructive focus:text-destructive"
+                >
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  <span>Delete Chat</span>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </>
+        )}
       </div>
+
+      {isChatSearchOpen ? (
+        <div className="w-full sm:hidden">
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              placeholder="Search in chat..."
+              className="h-9 pl-9 pr-10"
+              value={chatSearchQuery}
+              onChange={(e) => onChatSearchQueryChange(e.target.value)}
+              autoFocus
+            />
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              className="absolute right-1 top-1/2 -translate-y-1/2 text-muted-foreground"
+              onClick={onChatSearchClose}
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+      ) : null}
     </header>
   )
 }

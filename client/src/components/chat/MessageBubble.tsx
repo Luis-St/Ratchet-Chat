@@ -19,6 +19,14 @@ import remarkGfm from "remark-gfm"
 
 import { Button } from "@/components/ui/button"
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog"
+import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
@@ -95,6 +103,18 @@ export function MessageBubble({
     ? truncateText(getReplyPreviewText(replyTarget), 90)
     : "Message deleted"
 
+  const [isInfoOpen, setIsInfoOpen] = React.useState(false)
+  const [isSwiping, setIsSwiping] = React.useState(false)
+  const [swipeOffset, setSwipeOffset] = React.useState(0)
+  const swipeStartRef = React.useRef<{
+    x: number
+    y: number
+    time: number
+    target: EventTarget | null
+  } | null>(null)
+  const swipeAxisRef = React.useRef<"x" | "y" | null>(null)
+  const lastSwipeAtRef = React.useRef<number | null>(null)
+
   // Link embed preview
   const { settings } = useSettings()
   const embeddableUrl = React.useMemo(() => {
@@ -105,6 +125,145 @@ export function MessageBubble({
   const { data: embedData, isLoading: isEmbedLoading } = useEmbedPreview(
     embeddableUrl,
     settings.enableLinkPreviews
+  )
+  const attachmentsCount = message.attachments?.length ?? 0
+  const attachmentsSize = message.attachments?.reduce((sum, att) => sum + att.size, 0) ?? 0
+  const statusLabel =
+    message.direction === "out"
+      ? receiptState
+        ? receiptState.toLowerCase()
+        : "sending..."
+      : "received"
+  const statusTone =
+    receiptState === "READ"
+      ? "text-sky-600"
+      : receiptState === "PROCESSED"
+      ? "text-amber-600"
+      : receiptState === "DELIVERED"
+      ? "text-emerald-600"
+      : "text-muted-foreground"
+
+  const formatInfoTimestamp = React.useCallback((value?: string | null) => {
+    if (!value) return "—"
+    const date = new Date(value)
+    if (Number.isNaN(date.getTime())) return "—"
+    return date.toLocaleString()
+  }, [])
+
+  const handleTouchStart = React.useCallback(
+    (event: React.TouchEvent<HTMLDivElement>) => {
+      if (!isTouchActions) return
+      if (event.touches.length !== 1) return
+      const touch = event.touches[0]
+      swipeAxisRef.current = null
+      setIsSwiping(false)
+      setSwipeOffset(0)
+      swipeStartRef.current = {
+        x: touch.clientX,
+        y: touch.clientY,
+        time: Date.now(),
+        target: event.target,
+      }
+    },
+    [isTouchActions]
+  )
+
+  const handleTouchMove = React.useCallback(
+    (event: React.TouchEvent<HTMLDivElement>) => {
+      if (!isTouchActions) return
+      const start = swipeStartRef.current
+      if (!start) return
+      if (event.cancelable) {
+        event.preventDefault()
+      }
+      const touch = event.touches[0]
+      if (!touch) return
+      const dx = touch.clientX - start.x
+      const dy = touch.clientY - start.y
+      const absX = Math.abs(dx)
+      const absY = Math.abs(dy)
+      if (!swipeAxisRef.current) {
+        if (absX < 6 && absY < 6) return
+        swipeAxisRef.current = absX > absY + 8 ? "x" : "y"
+      }
+      if (swipeAxisRef.current === "y") {
+        return
+      }
+      if (start.target instanceof HTMLElement) {
+        if (
+          start.target.closest(
+            'a,button,input,textarea,select,label,[data-no-action-toggle="true"],[data-no-swipe="true"]'
+          )
+        ) {
+          swipeAxisRef.current = null
+          swipeStartRef.current = null
+          setIsSwiping(false)
+          setSwipeOffset(0)
+          return
+        }
+      }
+      if (event.cancelable) {
+        event.preventDefault()
+      }
+      if (!isSwiping) {
+        setIsSwiping(true)
+      }
+      const maxOffset = 120
+      const linearOffset = maxOffset * 0.7
+      const viewportWidth =
+        typeof window !== "undefined" ? window.innerWidth : 360
+      const slowdownStart = viewportWidth * 0.5
+      const absDx = Math.abs(dx)
+      const eased =
+        absDx <= slowdownStart
+          ? (absDx / slowdownStart) * linearOffset
+          : linearOffset +
+            (maxOffset - linearOffset) *
+              (1 - Math.exp(-(absDx - slowdownStart) / (slowdownStart * 0.35)))
+      const nextOffset = Math.sign(dx) * Math.min(maxOffset, eased)
+      setSwipeOffset(nextOffset)
+    },
+    [isSwiping, isTouchActions]
+  )
+
+  const handleTouchEnd = React.useCallback(
+    (event: React.TouchEvent<HTMLDivElement>) => {
+      if (!isTouchActions) return
+      const start = swipeStartRef.current
+      swipeStartRef.current = null
+      if (!start) return
+      const swipeAxis = swipeAxisRef.current
+      swipeAxisRef.current = null
+      if (swipeAxis === "y") {
+        setIsSwiping(false)
+        setSwipeOffset(0)
+        return
+      }
+      const touch = event.changedTouches[0]
+      if (!touch) return
+      const dx = touch.clientX - start.x
+      const dy = touch.clientY - start.y
+      const absX = Math.abs(dx)
+      const absY = Math.abs(dy)
+      const swipeThreshold = 72
+      if (absX > 12 && absX > absY + 12) {
+        lastSwipeAtRef.current = Date.now()
+      }
+      if (absX < swipeThreshold || absX < absY + 12) {
+        setIsSwiping(false)
+        setSwipeOffset(0)
+        return
+      }
+      lastSwipeAtRef.current = Date.now()
+      if (dx > 0) {
+        onReply(message)
+      } else {
+        setIsInfoOpen(true)
+      }
+      setIsSwiping(false)
+      setSwipeOffset(0)
+    },
+    [isTouchActions, message, onReply]
   )
 
   return (
@@ -138,7 +297,24 @@ export function MessageBubble({
                 ? "bg-emerald-100 dark:bg-emerald-900 text-foreground rounded-2xl rounded-br-sm"
                 : "bg-card dark:bg-muted text-foreground rounded-2xl rounded-bl-sm"
             )}
-            onClick={(event) => onMessageTap(event, message)}
+            onClick={(event) => {
+              if (
+                lastSwipeAtRef.current &&
+                Date.now() - lastSwipeAtRef.current < 400
+              ) {
+                lastSwipeAtRef.current = null
+                return
+              }
+              onMessageTap(event, message)
+            }}
+            onTouchStart={handleTouchStart}
+            onTouchMove={handleTouchMove}
+            onTouchEnd={handleTouchEnd}
+            style={{
+              transform: swipeOffset ? `translateX(${swipeOffset}px)` : undefined,
+              transition: isSwiping ? "none" : "transform 200ms ease",
+              touchAction: isTouchActions ? "none" : undefined,
+            }}
           >
             {message.replyTo?.messageId ? (
               <div
@@ -416,58 +592,146 @@ export function MessageBubble({
               </TooltipContent>
             </Tooltip>
           ) : null}
-          <Tooltip>
-            <TooltipTrigger asChild>
+          <Dialog open={isInfoOpen} onOpenChange={setIsInfoOpen}>
+            <DialogTrigger asChild>
               <Button
                 variant="ghost"
                 size="icon"
                 className="h-6 w-6 text-slate-400 hover:text-slate-600"
+                aria-label="Message info"
               >
                 <Info className="h-4 w-4" />
               </Button>
-            </TooltipTrigger>
-            <TooltipContent side="top" className="text-xs">
-              <div className="space-y-1">
-                <p>
-                  <span className="font-semibold">Status:</span>{" "}
-                  {message.direction === "out"
-                    ? receiptState
-                      ? receiptState.toLowerCase()
-                      : "sending..."
-                    : "received"}
-                </p>
-                {message.direction === "out" && deliveredAt ? (
-                  <p>
-                    <span className="font-semibold">Delivered:</span>{" "}
-                    {new Date(deliveredAt).toLocaleString()}
-                  </p>
-                ) : null}
-                {message.direction === "out" && processedAt ? (
-                  <p>
-                    <span className="font-semibold">Processed:</span>{" "}
-                    {new Date(processedAt).toLocaleString()}
-                  </p>
-                ) : null}
-                {message.direction === "out" && readAt ? (
-                  <p>
-                    <span className="font-semibold">Read:</span>{" "}
-                    {new Date(readAt).toLocaleString()}
-                  </p>
-                ) : null}
-                <p>
-                  <span className="font-semibold">Signature:</span>{" "}
-                  {message.verified ? "Verified" : "Unverified"}
-                </p>
-                <p>
-                  <span className="font-semibold">Time:</span>{" "}
-                  {new Date(message.timestamp).toLocaleString()}
-                </p>
-                <p className="font-mono text-[9px] text-muted-foreground break-all">
-                  {message.id}
-                </p>
+            </DialogTrigger>
+            <DialogContent className="sm:max-w-[540px]">
+              <DialogHeader>
+                <DialogTitle>Message info</DialogTitle>
+                <DialogDescription>
+                  Delivery, security, and metadata for this message.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="space-y-4">
+                <div className="rounded-lg border bg-muted/50 p-4">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-semibold">Delivery</span>
+                    <span className={cn("text-xs font-semibold uppercase tracking-wide", statusTone)}>
+                      {statusLabel}
+                    </span>
+                  </div>
+                  <div className="mt-3 grid grid-cols-1 gap-2 text-xs sm:grid-cols-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-muted-foreground">
+                        {message.direction === "out" ? "Sent" : "Received"}
+                      </span>
+                      <span className="font-mono">{formatInfoTimestamp(message.timestamp)}</span>
+                    </div>
+                    {message.editedAt ? (
+                      <div className="flex items-center justify-between">
+                        <span className="text-muted-foreground">Edited</span>
+                        <span className="font-mono">{formatInfoTimestamp(message.editedAt)}</span>
+                      </div>
+                    ) : null}
+                    {message.direction === "out" && deliveredAt ? (
+                      <div className="flex items-center justify-between">
+                        <span className="text-muted-foreground">Delivered</span>
+                        <span className="font-mono">{formatInfoTimestamp(deliveredAt)}</span>
+                      </div>
+                    ) : null}
+                    {message.direction === "out" && processedAt ? (
+                      <div className="flex items-center justify-between">
+                        <span className="text-muted-foreground">Processed</span>
+                        <span className="font-mono">{formatInfoTimestamp(processedAt)}</span>
+                      </div>
+                    ) : null}
+                    {message.direction === "out" && readAt ? (
+                      <div className="flex items-center justify-between">
+                        <span className="text-muted-foreground">Read</span>
+                        <span className="font-mono">{formatInfoTimestamp(readAt)}</span>
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+
+                <div className="rounded-lg border bg-muted/50 p-4">
+                  <div className="text-sm font-semibold">Message</div>
+                  <div className="mt-3 grid grid-cols-1 gap-2 text-xs sm:grid-cols-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-muted-foreground">Direction</span>
+                      <span className="font-mono">
+                        {message.direction === "out" ? "Outgoing" : "Incoming"}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-muted-foreground">Sender</span>
+                      <span className="font-mono">
+                        {message.direction === "out"
+                          ? "You"
+                          : message.peerUsername ?? message.peerHandle}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-muted-foreground">Characters</span>
+                      <span className="font-mono">{message.text?.length ?? 0}</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-muted-foreground">Attachments</span>
+                      <span className="font-mono">
+                        {attachmentsCount > 0
+                          ? `${attachmentsCount} (${(attachmentsSize / 1024).toFixed(1)} KB)`
+                          : "None"}
+                      </span>
+                    </div>
+                  </div>
+                  {message.replyTo?.messageId ? (
+                    <div className="mt-3 rounded-md border border-dashed border-border/70 bg-background/60 p-3 text-xs">
+                      <div className="text-muted-foreground">Replying to</div>
+                      <div className="mt-1 font-semibold">
+                        {replyTarget ? replySender : "Message deleted"}
+                      </div>
+                      <div className="mt-1 text-muted-foreground">
+                        {replyTarget ? replyPreview : "Original message unavailable"}
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+
+                <div className="rounded-lg border bg-muted/50 p-4">
+                  <div className="text-sm font-semibold">Security</div>
+                  <div className="mt-3 grid grid-cols-1 gap-2 text-xs sm:grid-cols-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-muted-foreground">Signature</span>
+                      <span
+                        className={cn(
+                          "font-semibold",
+                          message.verified ? "text-emerald-600" : "text-amber-600"
+                        )}
+                      >
+                        {message.verified ? "Verified" : "Unverified"}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-muted-foreground">Peer handle</span>
+                      <span className="font-mono">{message.peerHandle}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-lg border bg-muted/50 p-4">
+                  <div className="text-sm font-semibold">Identifiers</div>
+                  <div className="mt-2 text-[10px] text-muted-foreground">Local ID</div>
+                  <div className="font-mono text-[10px] break-all">{message.id}</div>
+                  {message.messageId ? (
+                    <>
+                      <div className="mt-3 text-[10px] text-muted-foreground">Server ID</div>
+                      <div className="font-mono text-[10px] break-all">
+                        {message.messageId}
+                      </div>
+                    </>
+                  ) : null}
+                </div>
               </div>
-            </TooltipContent>
-          </Tooltip>
+            </DialogContent>
+          </Dialog>
         </div>
       </div>
     </div>
