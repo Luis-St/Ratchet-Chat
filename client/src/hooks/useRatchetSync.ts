@@ -1161,6 +1161,7 @@ export function useRatchetSync(options: UseRatchetSyncOptions = {}) {
             direction?: "in" | "out"
             timestamp?: string
             isRead?: boolean
+            is_read?: boolean
           }
 
           decryptedMap.set(peerHandle, {
@@ -1168,7 +1169,7 @@ export function useRatchetSync(options: UseRatchetSyncOptions = {}) {
             lastMessageText: payload.text ?? payload.content ?? "",
             lastMessageTimestamp: payload.timestamp ?? summary.created_at,
             direction: payload.direction ?? "in",
-            isRead: payload.isRead ?? false,
+            isRead: payload.is_read ?? payload.isRead ?? false,
           })
         } catch {
           // Skip messages that fail to decrypt

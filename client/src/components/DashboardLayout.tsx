@@ -390,7 +390,7 @@ export function DashboardLayout() {
   const updateMessagePayload = React.useCallback(
     async (
       messageId: string,
-      updates: { deliveredAt?: string; processedAt?: string; readAt?: string }
+      updates: { deliveredAt?: string; processedAt?: string; readAt?: string; isRead?: boolean }
     ) => {
       if (!masterKey) {
         return null
@@ -430,6 +430,9 @@ export function DashboardLayout() {
       }
       if (updates.readAt) {
         nextPayload.read_at = updates.readAt
+      }
+      if (updates.isRead !== undefined) {
+        nextPayload.is_read = updates.isRead
       }
       const encrypted = await encryptString(masterKey, JSON.stringify(nextPayload))
       const contentJson = JSON.stringify({
@@ -1437,6 +1440,10 @@ export function DashboardLayout() {
               ? { ...message, isRead: true }
               : message
           )
+        )
+        // Sync is_read to vault for cross-device consistency
+        await Promise.all(
+          unreadIds.map((id) => updateMessagePayload(id, { isRead: true }))
         )
       }
 

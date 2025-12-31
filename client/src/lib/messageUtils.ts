@@ -115,6 +115,7 @@ export async function decodeMessageRecord(
       processedAt?: string
       read_at?: string
       readAt?: string
+      is_read?: boolean  // Synced read status
       reply_to_message_id?: string
       replyToMessageId?: string
       reply_to_text?: string
@@ -150,7 +151,8 @@ export async function decodeMessageRecord(
       const callDirection =
         payload.direction ?? payload.call_direction ?? payload.callDirection ?? "incoming"
       const messageDirection = callDirection === "outgoing" ? "out" : "in"
-      const isRead = record.isRead ?? messageDirection === "out"
+      // Prefer synced is_read from payload, fallback to local record, then default by direction
+      const isRead = payload.is_read ?? record.isRead ?? messageDirection === "out"
       const messageId =
         payload.messageId ??
         payload.message_id ??
@@ -206,7 +208,8 @@ export async function decodeMessageRecord(
         ? "reaction"
         : "message"
     const direction = payload.direction ?? "in"
-    const isRead = record.isRead ?? direction === "out"
+    // Prefer synced is_read from payload, fallback to local record, then default by direction
+    const isRead = payload.is_read ?? record.isRead ?? direction === "out"
     const messageId =
       payload.messageId ??
       payload.message_id ??
