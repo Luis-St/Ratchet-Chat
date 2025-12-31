@@ -13,6 +13,7 @@ import { Separator } from "@/components/ui/separator"
 import { RecipientInfoDialog } from "@/components/RecipientInfoDialog"
 import { useContacts } from "@/context/ContactsContext"
 import { useBlock } from "@/context/BlockContext"
+import { getContactDisplayName, getContactInitials } from "@/lib/contacts"
 import { splitHandle } from "@/lib/handles"
 import type { Contact } from "@/types/dashboard"
 import { OPEN_CONTACT_CHAT_EVENT, type OpenContactChatDetail } from "@/lib/events"
@@ -60,10 +61,14 @@ export function ContactsDialog({
     return contacts.filter((contact) => {
       const handle = contact.handle.toLowerCase()
       const username = (contact.username ?? "").toLowerCase()
+      const nickname = (contact.nickname ?? "").toLowerCase()
+      const displayName = getContactDisplayName(contact).toLowerCase()
       const host = (contact.host ?? "").toLowerCase()
       return (
         handle.includes(needle) ||
         username.includes(needle) ||
+        nickname.includes(needle) ||
+        displayName.includes(needle) ||
         host.includes(needle)
       )
     })
@@ -95,14 +100,14 @@ export function ContactsDialog({
             label: host,
             indexKey,
             contacts: items.sort((a, b) =>
-              (a.username || a.handle).localeCompare(b.username || b.handle)
+              getContactDisplayName(a).localeCompare(getContactDisplayName(b))
             ),
           }
         })
     }
     const map = new Map<string, Contact[]>()
     for (const contact of filteredContacts) {
-      const labelSource = contact.username || contact.handle
+      const labelSource = getContactDisplayName(contact)
       const firstChar = labelSource.trim()[0]?.toUpperCase() ?? "#"
       const key = ALPHABET.includes(firstChar) ? firstChar : "#"
       const existing = map.get(key) ?? []
@@ -117,7 +122,7 @@ export function ContactsDialog({
         label: letter,
         indexKey: letter,
         contacts: (map.get(letter) ?? []).sort((a, b) =>
-          (a.username || a.handle).localeCompare(b.username || b.handle)
+          getContactDisplayName(a).localeCompare(getContactDisplayName(b))
         ),
       }))
   }, [filteredContacts, groupByServer])
@@ -181,7 +186,7 @@ export function ContactsDialog({
 
   const handleRemoveContact = React.useCallback(
     async (contact: Contact) => {
-      const label = contact.username || contact.handle
+      const label = getContactDisplayName(contact)
       const confirmed = window.confirm(`Remove ${label} from contacts?`)
       if (!confirmed) return
       await removeContact(contact.handle)
@@ -192,7 +197,7 @@ export function ContactsDialog({
 
   const handleBlockContact = React.useCallback(
     async (contact: Contact) => {
-      const label = contact.username || contact.handle
+      const label = getContactDisplayName(contact)
       const confirmed = window.confirm(`Block ${label}?`)
       if (!confirmed) return
       await blockUser(contact.handle)
@@ -251,7 +256,7 @@ export function ContactsDialog({
                 onKeyDown={(event) => event.key === "Enter" && handleAddContact()}
                 disabled={isAdding}
               />
-              <Button onClick={handleAddContact} disabled={isAdding}>
+              <Button variant="accept" onClick={handleAddContact} disabled={isAdding}>
                 <Plus className="mr-2 h-4 w-4" />
                 {isAdding ? "Adding..." : "Add Contact"}
               </Button>
@@ -299,16 +304,20 @@ export function ContactsDialog({
                               className="flex flex-1 items-center gap-3 text-left"
                             >
                               <Avatar className="h-9 w-9">
-                                <AvatarImage src="" alt={contact.username} />
+                                <AvatarImage 
+                                  src={contact.avatar_filename 
+                                    ? `${process.env.NEXT_PUBLIC_API_URL}/uploads/avatars/${contact.avatar_filename}` 
+                                    : undefined
+                                  } 
+                                  alt={getContactDisplayName(contact)} 
+                                />
                                 <AvatarFallback>
-                                  {(contact.username || contact.handle)
-                                    .slice(0, 2)
-                                    .toUpperCase()}
+                                  {getContactInitials(contact)}
                                 </AvatarFallback>
                               </Avatar>
                               <div className="space-y-0.5">
                                 <div className="text-sm font-medium">
-                                  {contact.username || contact.handle}
+                                  {getContactDisplayName(contact)}
                                 </div>
                                 <div className="text-xs text-muted-foreground">
                                   {contact.handle}
@@ -318,8 +327,7 @@ export function ContactsDialog({
                             <div className="ml-3 flex items-center gap-1">
                               <Button
                                 variant="ghost"
-                                size="icon"
-                                className="h-8 w-8"
+                                size="icon-sm"
                                 onClick={() => handleSendMessage(contact)}
                                 title="Send message"
                               >
@@ -327,8 +335,7 @@ export function ContactsDialog({
                               </Button>
                               <Button
                                 variant="ghost"
-                                size="icon"
-                                className="h-8 w-8"
+                                size="icon-sm"
                                 onClick={() => handleRemoveContact(contact)}
                                 title="Remove from contacts"
                               >
@@ -336,8 +343,7 @@ export function ContactsDialog({
                               </Button>
                               <Button
                                 variant="ghost"
-                                size="icon"
-                                className="h-8 w-8 text-destructive hover:text-destructive"
+                                size="icon-sm"
                                 onClick={() => handleBlockContact(contact)}
                                 title="Block user"
                               >

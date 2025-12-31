@@ -4,9 +4,12 @@ import { PrismaClient } from "@prisma/client";
 import { createServer as createHttpServer } from "http";
 import { createServer as createHttpsServer } from "https";
 import { Server as SocketIOServer } from "socket.io";
+import path from "path";
+import fs from "fs";
 
 import { createAuthRouter } from "./routes/auth";
 import { createDirectoryRouter } from "./routes/directory";
+import { createEmbedRouter } from "./routes/embed";
 import { createMessagesRouter } from "./routes/messages";
 import { getJwtSecret, hashToken, type AuthenticatedUser } from "./middleware/auth";
 import {
@@ -269,6 +272,12 @@ app.use((req, res, next) => {
 });
 app.use(express.json({ limit: "20mb" }));
 
+const AVATAR_DIR = path.join(process.cwd(), "uploads", "avatars");
+if (!fs.existsSync(AVATAR_DIR)) {
+  fs.mkdirSync(AVATAR_DIR, { recursive: true });
+}
+app.use("/uploads/avatars", express.static(AVATAR_DIR));
+
 app.get("/health", (_req, res) => {
   res.json({
     status: "ok",
@@ -285,6 +294,7 @@ app.get("/.well-known/ratchet-chat/federation.json", (req, res) => {
 app.use("/auth", createAuthRouter(prisma, io));
 app.use("/directory", createDirectoryRouter(prisma));
 app.use("/api/directory", createDirectoryRouter(prisma));
+app.use("/api/embed", createEmbedRouter());
 app.use("/", createMessagesRouter(prisma, io));
 
 app.use((req, res) => {
