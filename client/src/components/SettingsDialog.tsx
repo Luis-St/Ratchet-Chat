@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { Ban, Camera, ChevronLeft, ChevronRight, Copy, Eye, EyeOff, Fingerprint, Key, Lock, LogOut, Monitor, Plus, Server, Shield, Trash2, User, X } from "lucide-react"
+import { Ban, Bell, Camera, ChevronLeft, ChevronRight, Copy, Eye, EyeOff, Fingerprint, Key, Lock, LogOut, Monitor, Plus, Server, Shield, Trash2, User, X } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
@@ -29,6 +29,13 @@ import { useBlock } from "@/context/BlockContext"
 import { useCall } from "@/context/CallContext"
 import { useSync } from "@/context/SyncContext"
 import { useSettings } from "@/hooks/useSettings"
+import {
+  getSessionNotificationsEnabled,
+  setSessionNotificationsEnabled,
+  subscribeToPush,
+  unsubscribeFromPush,
+  isPushSubscribed,
+} from "@/lib/push"
 import type { PrivacyScope, MessageAcceptance } from "@/context/SettingsContext"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
@@ -226,7 +233,7 @@ async function compressAvatarImage(
   throw new Error("Unable to compress image below size limit")
 }
 
-type SettingsPage = "personalization" | "privacy" | "access" | "security" | "blocking"
+type SettingsPage = "personalization" | "privacy" | "notifications" | "access" | "security" | "blocking"
 
 export function SettingsDialog({
   open,
@@ -277,6 +284,14 @@ export function SettingsDialog({
   const [newBlockedUser, setNewBlockedUser] = React.useState("")
   const [newBlockedServer, setNewBlockedServer] = React.useState("")
   const [blockError, setBlockError] = React.useState<string | null>(null)
+
+  // Session notifications state (device-specific)
+  const [sessionNotifications, setSessionNotifications] = React.useState(true)
+  const [loadingSessionNotifications, setLoadingSessionNotifications] = React.useState(true)
+
+  // Push subscription state
+  const [pushSubscribed, setPushSubscribed] = React.useState(false)
+  const [pushSubscribing, setPushSubscribing] = React.useState(false)
 
   const identityKey = publicIdentityKey ?? ""
   const identityKeyPreview = formatKeyPreview(identityKey)
@@ -413,6 +428,48 @@ export function SettingsDialog({
     }
   }, [open])
 
+  // Load session notifications setting when dialog opens
+  React.useEffect(() => {
+    if (open) {
+      setLoadingSessionNotifications(true)
+      getSessionNotificationsEnabled()
+        .then(setSessionNotifications)
+        .finally(() => setLoadingSessionNotifications(false))
+
+      // Check push subscription status
+      isPushSubscribed().then(setPushSubscribed)
+    }
+  }, [open])
+
+  const handleSessionNotificationsChange = React.useCallback((checked: boolean) => {
+    setSessionNotifications(checked)
+    void setSessionNotificationsEnabled(checked)
+  }, [])
+
+  const handlePushToggle = React.useCallback(async (checked: boolean) => {
+    setPushSubscribing(true)
+    try {
+      if (checked) {
+        // Subscribe to push notifications
+        const success = await subscribeToPush()
+        if (success) {
+          setPushSubscribed(true)
+          updateSettings({ pushNotificationsEnabled: true })
+        } else {
+          // Permission denied or subscription failed
+          updateSettings({ pushNotificationsEnabled: false })
+        }
+      } else {
+        // Unsubscribe from push notifications
+        await unsubscribeFromPush()
+        setPushSubscribed(false)
+        updateSettings({ pushNotificationsEnabled: false })
+      }
+    } finally {
+      setPushSubscribing(false)
+    }
+  }, [updateSettings])
+
   const handleBlockUser = React.useCallback(async () => {
     const handle = newBlockedUser.trim().toLowerCase()
     if (!handle) {
@@ -541,6 +598,12 @@ export function SettingsDialog({
       title: "Privacy",
       description: "Control what others can see.",
       icon: Eye,
+    },
+    {
+      id: "notifications",
+      title: "Notifications",
+      description: "Push notification preferences.",
+      icon: Bell,
     },
     {
       id: "access",
@@ -1137,6 +1200,125 @@ export function SettingsDialog({
         </div>
       </div>
     ),
+    notifications: (
+      <div className="space-y-6 py-4">
+        <div className="space-y-4">
+          <div className="space-y-1">
+            <h3 className="text-sm font-medium">Push Notifications</h3>
+            <p className="text-xs text-muted-foreground">
+              Get notified when you receive new messages, even when the app is closed.
+            </p>
+          </div>
+
+          <div className="flex items-center justify-between">
+            <div className="space-y-0.5">
+              <Label htmlFor="push-enabled" className="text-sm">
+                Enable push notifications
+              </Label>
+              <p className="text-xs text-muted-foreground">
+                {pushSubscribing
+                  ? "Updating subscription..."
+                  : pushSubscribed
+                    ? "Subscribed to push notifications"
+                    : "Not subscribed - enable to subscribe"}
+              </p>
+            </div>
+            <Switch
+              id="push-enabled"
+              checked={settings.pushNotificationsEnabled}
+              disabled={pushSubscribing}
+              onCheckedChange={handlePushToggle}
+            />
+          </div>
+
+          <Separator />
+
+          <div className="space-y-4">
+            <div className="space-y-1">
+              <h4 className="text-sm font-medium">Notification Content</h4>
+              <p className="text-xs text-muted-foreground">
+                Control what information is shown in notifications.
+              </p>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <div className="space-y-0.5">
+                <Label htmlFor="push-sender" className="text-sm">
+                  Show sender name
+                </Label>
+                <p className="text-xs text-muted-foreground">
+                  Display who sent the message
+                </p>
+              </div>
+              <Switch
+                id="push-sender"
+                checked={settings.pushShowSenderName}
+                onCheckedChange={(checked) =>
+                  updateSettings({ pushShowSenderName: checked })
+                }
+                disabled={!settings.pushNotificationsEnabled}
+              />
+            </div>
+
+            <div className="flex items-center justify-between">
+              <div className="space-y-0.5">
+                <Label htmlFor="push-content" className="text-sm">
+                  Show message preview
+                </Label>
+                <p className="text-xs text-muted-foreground">
+                  Display a preview of the message content
+                </p>
+              </div>
+              <Switch
+                id="push-content"
+                checked={settings.pushShowContent}
+                onCheckedChange={(checked) =>
+                  updateSettings({ pushShowContent: checked })
+                }
+                disabled={!settings.pushNotificationsEnabled}
+              />
+            </div>
+
+            <div className="rounded-md border border-muted-foreground/20 bg-muted/40 p-2 text-[10px] text-muted-foreground">
+              Note: Message previews require your password to be saved (auto-unlock enabled).
+              Without a saved password, only sender names can be shown.
+            </div>
+          </div>
+
+          <Separator />
+
+          <div className="space-y-4">
+            <div className="space-y-1">
+              <h4 className="text-sm font-medium">Device Settings</h4>
+              <p className="text-xs text-muted-foreground">
+                Settings that only apply to this device.
+              </p>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <div className="space-y-0.5">
+                <Label htmlFor="session-notifications" className="text-sm">
+                  Notifications on this device
+                </Label>
+                <p className="text-xs text-muted-foreground">
+                  Disable to silence notifications on this device only
+                </p>
+              </div>
+              <Switch
+                id="session-notifications"
+                checked={sessionNotifications}
+                disabled={loadingSessionNotifications || !settings.pushNotificationsEnabled}
+                onCheckedChange={handleSessionNotificationsChange}
+              />
+            </div>
+
+            <div className="rounded-md border border-muted-foreground/20 bg-muted/40 p-2 text-[10px] text-muted-foreground">
+              This setting stays on this device and is not synced to other devices or the server.
+            </div>
+          </div>
+        </div>
+      </div>
+    ),
     blocking: (
       <div className="space-y-6 py-4">
         <div className="space-y-3">
@@ -1260,7 +1442,10 @@ export function SettingsDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[640px] max-h-[85vh] grid-rows-[auto_auto_1fr] overflow-hidden">
+      <DialogContent
+        className="sm:max-w-[640px] max-h-[85vh] grid-rows-[auto_auto_1fr] overflow-hidden"
+        onOpenAutoFocus={(e) => e.preventDefault()}
+      >
         <DialogHeader className="space-y-3">
           <DialogTitle className="sr-only">Settings</DialogTitle>
           <Breadcrumb>

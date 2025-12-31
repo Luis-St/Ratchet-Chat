@@ -6,6 +6,7 @@ import { useSync } from "@/context/SyncContext"
 import { apiFetch } from "@/lib/api"
 import { encryptString, decryptString, type EncryptedPayload } from "@/lib/crypto"
 import { db } from "@/lib/db"
+import { storeNotificationSettings, type NotificationSettings } from "@/lib/push"
 
 export type PrivacyScope = "everybody" | "same_server" | "contacts" | "nobody"
 export type MessageAcceptance = "everybody" | "same_server" | "contacts" | "nobody"
@@ -33,6 +34,10 @@ type PrivacySettings = {
   avatarFilename?: string | null
   avatarVisibility?: "public" | "hidden"
   enableLinkPreviews: boolean
+  // Push notification settings
+  pushNotificationsEnabled: boolean
+  pushShowContent: boolean
+  pushShowSenderName: boolean
 }
 
 // Combined settings type
@@ -51,6 +56,9 @@ const DEFAULT_PRIVACY_SETTINGS: PrivacySettings = {
   typingIndicatorScope: "everybody",
   sendReadReceiptsTo: "everybody",
   enableLinkPreviews: true,
+  pushNotificationsEnabled: true,
+  pushShowContent: true,
+  pushShowSenderName: true,
 }
 
 const DEFAULT_AVATAR_SETTINGS: AvatarSettings = {
@@ -146,11 +154,32 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
         if (typeof raw.enableLinkPreviews === "boolean") {
           privacySettings.enableLinkPreviews = raw.enableLinkPreviews
         }
-        setSettings((prev) => ({
-          ...prev,
+        // Push notification settings
+        if (typeof raw.pushNotificationsEnabled === "boolean") {
+          privacySettings.pushNotificationsEnabled = raw.pushNotificationsEnabled
+        }
+        if (typeof raw.pushShowContent === "boolean") {
+          privacySettings.pushShowContent = raw.pushShowContent
+        }
+        if (typeof raw.pushShowSenderName === "boolean") {
+          privacySettings.pushShowSenderName = raw.pushShowSenderName
+        }
+
+        const finalSettings = {
           ...DEFAULT_PRIVACY_SETTINGS,
           ...privacySettings,
+        }
+        setSettings((prev) => ({
+          ...prev,
+          ...finalSettings,
         }))
+
+        // Sync notification settings to IndexedDB for service worker
+        void storeNotificationSettings({
+          pushNotificationsEnabled: finalSettings.pushNotificationsEnabled,
+          pushShowContent: finalSettings.pushShowContent,
+          pushShowSenderName: finalSettings.pushShowSenderName,
+        })
       } catch (error) {
         console.error("Failed to decrypt privacy settings:", error)
       }
@@ -381,6 +410,15 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
       if ("enableLinkPreviews" in updates) {
         privacyUpdates.enableLinkPreviews = updates.enableLinkPreviews
       }
+      if ("pushNotificationsEnabled" in updates) {
+        privacyUpdates.pushNotificationsEnabled = updates.pushNotificationsEnabled
+      }
+      if ("pushShowContent" in updates) {
+        privacyUpdates.pushShowContent = updates.pushShowContent
+      }
+      if ("pushShowSenderName" in updates) {
+        privacyUpdates.pushShowSenderName = updates.pushShowSenderName
+      }
 
       // Optimistic update
       setSettings((prev) => ({ ...prev, ...updates }))
@@ -408,9 +446,20 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
             avatarFilename: prev.avatarFilename ?? DEFAULT_AVATAR_SETTINGS.avatarFilename,
             avatarVisibility: prev.avatarVisibility ?? DEFAULT_AVATAR_SETTINGS.avatarVisibility,
             enableLinkPreviews: prev.enableLinkPreviews,
+            pushNotificationsEnabled: prev.pushNotificationsEnabled,
+            pushShowContent: prev.pushShowContent,
+            pushShowSenderName: prev.pushShowSenderName,
             ...privacyUpdates,
           }
           void savePrivacySettings(newPrivacySettings)
+
+          // Sync notification settings to IndexedDB for service worker
+          void storeNotificationSettings({
+            pushNotificationsEnabled: newPrivacySettings.pushNotificationsEnabled,
+            pushShowContent: newPrivacySettings.pushShowContent,
+            pushShowSenderName: newPrivacySettings.pushShowSenderName,
+          })
+
           return prev
         })
       }

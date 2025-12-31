@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { Ban, Download, MoreVertical, Phone, Search, Trash2, UserPlus, Video } from "lucide-react"
+import { Ban, BellOff, BellRing, Download, MoreVertical, Phone, Search, Trash2, UserPlus, Video } from "lucide-react"
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
@@ -9,8 +9,13 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
+import type { MuteDuration } from "@/lib/mute"
 import { Input } from "@/components/ui/input"
 import { SidebarTrigger } from "@/components/ui/sidebar"
 import { getContactDisplayName, getContactInitials } from "@/lib/contacts"
@@ -32,6 +37,9 @@ type ChatHeaderProps = {
   showAddContact?: boolean
   onStartCall?: (type: "AUDIO" | "VIDEO") => void
   isCallDisabled?: boolean
+  isMuted?: boolean
+  onMute?: (duration: MuteDuration) => void
+  onUnmute?: () => void
 }
 
 export function ChatHeader({
@@ -50,6 +58,9 @@ export function ChatHeader({
   showAddContact = false,
   onStartCall,
   isCallDisabled = false,
+  isMuted = false,
+  onMute,
+  onUnmute,
 }: ChatHeaderProps) {
   const displayName = activeContact
     ? getContactDisplayName(activeContact)
@@ -164,6 +175,41 @@ export function ChatHeader({
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
+            {activeContact && onMute && onUnmute && (
+              <>
+                {isMuted ? (
+                  <DropdownMenuItem onClick={onUnmute}>
+                    <BellRing className="mr-2 h-4 w-4" />
+                    <span>Unmute Notifications</span>
+                  </DropdownMenuItem>
+                ) : (
+                  <DropdownMenuSub>
+                    <DropdownMenuSubTrigger>
+                      <BellOff className="mr-2 h-4 w-4" />
+                      <span>Mute Notifications</span>
+                    </DropdownMenuSubTrigger>
+                    <DropdownMenuSubContent>
+                      <DropdownMenuItem onClick={() => onMute("1h")}>
+                        1 hour
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => onMute("8h")}>
+                        8 hours
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => onMute("24h")}>
+                        24 hours
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => onMute("1w")}>
+                        1 week
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => onMute("forever")}>
+                        Forever
+                      </DropdownMenuItem>
+                    </DropdownMenuSubContent>
+                  </DropdownMenuSub>
+                )}
+                <DropdownMenuSeparator />
+              </>
+            )}
             <DropdownMenuItem onClick={onExportChat}>
               <Download className="mr-2 h-4 w-4" />
               <span>Export Chat</span>

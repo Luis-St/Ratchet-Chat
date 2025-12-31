@@ -5,6 +5,10 @@ import { useForm } from "react-hook-form"
 import { Lock, LogOut } from "lucide-react"
 
 import { useAuth } from "@/context/AuthContext"
+import {
+  getSessionNotificationsEnabled,
+  setSessionNotificationsEnabled,
+} from "@/lib/push"
 import { Button } from "@/components/ui/button"
 import {
   Card,
@@ -27,6 +31,17 @@ export function LockScreen() {
   const [error, setError] = React.useState<string | null>(null)
   const [loading, setLoading] = React.useState(false)
   const [savePassword, setSavePassword] = React.useState(false)
+  const [sessionNotifications, setSessionNotifications] = React.useState(true)
+
+  // Load current session notifications setting on mount
+  React.useEffect(() => {
+    getSessionNotificationsEnabled().then(setSessionNotifications)
+  }, [])
+
+  const handleSessionNotificationsChange = React.useCallback((checked: boolean) => {
+    setSessionNotifications(checked)
+    void setSessionNotificationsEnabled(checked)
+  }, [])
 
   const form = useForm<UnlockValues>({
     defaultValues: { password: "" },
@@ -99,6 +114,16 @@ export function LockScreen() {
                 />
                 <Label htmlFor="save-password" className="text-sm">
                   Remember password on this device
+                </Label>
+              </div>
+              <div className="flex items-center space-x-2">
+                <Switch
+                  id="session-notifications"
+                  checked={sessionNotifications}
+                  onCheckedChange={handleSessionNotificationsChange}
+                />
+                <Label htmlFor="session-notifications" className="text-sm">
+                  Enable notifications on this device
                 </Label>
               </div>
               {error ? (

@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { ChevronDown, Inbox, Search, Settings, ShieldCheck, UserPlus } from "lucide-react"
+import { BellOff, ChevronDown, Inbox, Search, Settings, ShieldCheck, UserPlus } from "lucide-react"
 
 import { useAuth } from "@/context/AuthContext"
 import { useSettings } from "@/hooks/useSettings"
@@ -44,6 +44,7 @@ export type ConversationPreview = {
   avatarUrl?: string
   foundMessageId?: string
   isMessageRequest?: boolean
+  isMuted?: boolean
 }
 
 type AppSidebarProps = React.ComponentProps<typeof Sidebar> & {
@@ -260,9 +261,14 @@ export function AppSidebar({
                         </div>
                         <div className="min-w-0 flex-1 space-y-1 group-data-[collapsible=icon]:hidden">
                           <div className="flex items-center justify-between gap-2 min-w-0">
-                            <p className="truncate text-sm font-semibold flex-1">
-                              {conversation.name}
-                            </p>
+                            <div className="flex items-center gap-1.5 flex-1 min-w-0">
+                              <p className="truncate text-sm font-semibold flex-1">
+                                {conversation.name}
+                              </p>
+                              {conversation.isMuted && (
+                                <BellOff className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                              )}
+                            </div>
                             <span className="shrink-0 text-[11px] text-muted-foreground">
                               {conversation.lastTimestamp}
                             </span>

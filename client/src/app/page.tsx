@@ -1,5 +1,6 @@
 "use client"
 
+import { Suspense } from "react"
 import { AuthScreen } from "@/components/auth/AuthScreen"
 import { LockScreen } from "@/components/auth/LockScreen"
 import { DashboardLayout } from "@/components/DashboardLayout"
@@ -24,5 +25,9 @@ export default function Home() {
     return <LockScreen />
   }
 
-  return <DashboardLayout />
+  return (
+    <Suspense fallback={null}>
+      <DashboardLayout />
+    </Suspense>
+  )
 }

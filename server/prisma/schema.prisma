@@ -32,6 +32,9 @@ model User {
   // Privacy settings (encrypted client-side, server only stores blob)
   encrypted_privacy_settings    String?          @db.Text
   encrypted_privacy_settings_iv String?
+  // Muted conversations (encrypted client-side)
+  encrypted_muted_conversations    String?       @db.Text
+  encrypted_muted_conversations_iv String?
   created_at                 DateTime            @default(now())
   incoming_queue             IncomingQueue[]     @relation("IncomingRecipient")
   vault_messages             MessageVault[]      @relation("VaultOwner")
@@ -56,20 +59,36 @@ model PasskeyCredential {
 }
 
 model Session {
-  id              String   @id @default(uuid()) @db.Uuid
-  user_id         String   @db.Uuid
-  token_hash      String   @unique
-  device_info     String?
-  ip_address      String?
-  created_at      DateTime @default(now())
-  last_active_at  DateTime @default(now())
-  expires_at      DateTime
+  id                 String             @id @default(uuid()) @db.Uuid
+  user_id            String             @db.Uuid
+  token_hash         String             @unique
+  device_info        String?
+  ip_address         String?
+  created_at         DateTime           @default(now())
+  last_active_at     DateTime           @default(now())
+  expires_at         DateTime
 
-  user            User     @relation("UserSessions", fields: [user_id], references: [id], onDelete: Cascade)
+  user               User               @relation("UserSessions", fields: [user_id], references: [id], onDelete: Cascade)
+  push_subscriptions PushSubscription[] @relation("SessionPushSubscriptions")
 
   @@index([user_id])
   @@index([expires_at])
   @@index([token_hash])
+}
+
+model PushSubscription {
+  id           String   @id @default(uuid()) @db.Uuid
+  session_id   String   @db.Uuid
+  endpoint     String   @unique
+  p256dh_key   String
+  auth_key     String
+  user_agent   String?
+  created_at   DateTime @default(now())
+  last_used_at DateTime @default(now())
+
+  session      Session  @relation("SessionPushSubscriptions", fields: [session_id], references: [id], onDelete: Cascade)
+
+  @@index([session_id])
 }
 
 model IncomingQueue {

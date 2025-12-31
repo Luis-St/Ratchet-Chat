@@ -2,6 +2,7 @@
 
 import * as React from "react"
 import { createPortal } from "react-dom"
+import { useSearchParams, useRouter } from "next/navigation"
 import { Ban, Check, ShieldAlert, ShieldCheck, ShieldOff, Trash2, UserPlus } from "lucide-react"
 import { useTheme } from "next-themes"
 
@@ -23,6 +24,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { useAuth } from "@/context/AuthContext"
 import { useBlock } from "@/context/BlockContext"
+import { useMute } from "@/context/MuteContext"
 import { useCall } from "@/context/CallContext"
 import { useContacts } from "@/context/ContactsContext"
 import { useSocket } from "@/context/SocketContext"
@@ -46,6 +48,8 @@ import {
   decodeUtf8,
 } from "@/lib/crypto"
 import { normalizeHandle, splitHandle } from "@/lib/handles"
+import { createEncryptedPushPreview } from "@/lib/push"
+import type { MuteDuration } from "@/lib/mute"
 import { db, type MessageRecord } from "@/lib/db"
 import { cn } from "@/lib/utils"
 import { RecipientInfoDialog } from "@/components/RecipientInfoDialog"
@@ -146,6 +150,8 @@ const mergeContactLists = (base: Contact[], incoming: Contact[]) => {
 
 export function DashboardLayout() {
   const LAST_SELECTED_CHAT_KEY = "lastSelectedChat"
+  const searchParams = useSearchParams()
+  const router = useRouter()
   const {
     user,
     masterKey,
@@ -159,6 +165,7 @@ export function DashboardLayout() {
   const { settings } = useSettings()
   const { initiateCall, callState, handleCallMessage, externalCallActive } = useCall()
   const { isBlocked, blockUser } = useBlock()
+  const { isMuted, muteConversation, unmuteConversation } = useMute()
   const { contacts: syncedContacts, addContact, removeContact } = useContacts()
   const [contacts, setContacts] = React.useState<Contact[]>([])
   const savedContactHandles = React.useMemo(() => {
@@ -326,6 +333,22 @@ export function DashboardLayout() {
       window.removeEventListener(CONTACT_TRANSPORT_KEY_UPDATED_EVENT, handleUpdate)
     }
   }, [contacts, upsertContact])
+
+  // Handle ?chat= query param from notification clicks
+  React.useEffect(() => {
+    const chatHandle = searchParams.get("chat")
+    if (!chatHandle) return
+
+    // Set the active chat from the notification
+    setSuppressStoredSelection(true)
+    setActiveId(chatHandle)
+
+    // Clear the query param from the URL without triggering a navigation
+    const url = new URL(window.location.href)
+    url.searchParams.delete("chat")
+    router.replace(url.pathname + url.search, { scroll: false })
+  }, [searchParams, router])
+
   // TRANSPORT_KEY_ROTATED is now handled by SyncManager in SyncContext
   React.useEffect(() => {
     if (typeof window === "undefined") {
@@ -610,6 +633,9 @@ export function DashboardLayout() {
   const isMessageRequestChat = activeContact
     ? messageRequestHandles.has(activeContact.handle)
     : false
+  const isActiveContactMuted = activeContact
+    ? isMuted(activeContact.handle)
+    : false
   const activeMessagesRaw = activeContact
     ? messagesByPeer.get(activeContact.handle) ?? []
     : []
@@ -720,6 +746,7 @@ export function DashboardLayout() {
           lastTimestamp: formatTimestamp(lastTimestampRaw),
           lastTimestampRaw,
           unread,
+          isMuted: isMuted(contact.handle),
         }
       })
 
@@ -765,6 +792,7 @@ export function DashboardLayout() {
         lastMessage: truncate(rawText),
         lastTimestamp: formatTimestamp(lastMessage?.timestamp ?? ""),
         unread,
+        isMuted: isMuted(contact.handle),
       })
     }
 
@@ -786,13 +814,14 @@ export function DashboardLayout() {
           lastMessage: truncate(msg.text),
           lastTimestamp: formatTimestamp(msg.timestamp),
           unread: 0, // Search results typically don't show unread counts for the message itself
-          foundMessageId: msg.id
+          foundMessageId: msg.id,
+          isMuted: isMuted(contact.handle),
         })
       }
     }
 
     return results
-  }, [contacts, messagesByPeer, activeId, sidebarSearchQuery, summaries, isBlocked])
+  }, [contacts, messagesByPeer, activeId, sidebarSearchQuery, summaries, isBlocked, isMuted])
 
   // Build message requests list (conversations from unknown senders)
   const messageRequests = React.useMemo<ConversationPreview[]>(() => {
@@ -1508,6 +1537,16 @@ export function DashboardLayout() {
     setActiveId("")
   }, [activeContact, blockUser])
 
+  const handleMuteConversation = React.useCallback(async (duration: MuteDuration) => {
+    if (!activeContact) return
+    await muteConversation(activeContact.handle, duration)
+  }, [activeContact, muteConversation])
+
+  const handleUnmuteConversation = React.useCallback(async () => {
+    if (!activeContact) return
+    await unmuteConversation(activeContact.handle)
+  }, [activeContact, unmuteConversation])
+
   // Accept a message request - marks all messages from this sender as not a request
   const handleAcceptRequest = React.useCallback(async (shouldAddToContacts: boolean) => {
     if (!activeContact || !user) return
@@ -2176,6 +2215,26 @@ export function DashboardLayout() {
         activeContact.publicTransportKey
       )
 
+      // Create encrypted push preview for E2EE notifications
+      const previewText =
+        trimmed.length > 200 ? trimmed.slice(0, 197) + "..." : trimmed
+      const senderAvatarUrl = settings.avatarFilename
+        ? `${process.env.NEXT_PUBLIC_API_URL}/uploads/avatars/${settings.avatarFilename}`
+        : undefined
+      const encryptedPushPreview = await createEncryptedPushPreview(
+        {
+          type: "message",
+          sender_handle: user.handle,
+          sender_display_name: user.username || undefined,
+          sender_avatar_url: senderAvatarUrl,
+          preview: attachment
+            ? `📎 ${attachment.name}${previewText ? `: ${previewText}` : ""}`
+            : previewText,
+          message_id: messageId,
+        },
+        activeContact.publicTransportKey
+      )
+
       const localPayload = JSON.stringify({
         text: trimmed,
         attachments,
@@ -2222,6 +2281,7 @@ export function DashboardLayout() {
           encrypted_blob: encryptedBlob,
           message_id: messageId,
           event_type: "message",
+          encrypted_push_preview: encryptedPushPreview,
           sender_vault_blob: encryptedLocal.ciphertext,
           sender_vault_iv: encryptedLocal.iv,
           sender_vault_signature_verified: true,
@@ -2605,6 +2665,25 @@ export function DashboardLayout() {
           activeContact.publicTransportKey
         )
 
+        // Create encrypted push preview for E2EE notifications
+        const senderAvatarUrl = settings.avatarFilename
+          ? `${process.env.NEXT_PUBLIC_API_URL}/uploads/avatars/${settings.avatarFilename}`
+          : undefined
+        const encryptedPushPreview = await createEncryptedPushPreview(
+          {
+            type: "reaction",
+            sender_handle: user.handle,
+            sender_display_name: user.username || undefined,
+            sender_avatar_url: senderAvatarUrl,
+            preview:
+              reactionAction === "add"
+                ? `Reacted with ${emoji}`
+                : `Removed ${emoji} reaction`,
+            message_id: targetMessageId,
+          },
+          activeContact.publicTransportKey
+        )
+
         const localPayload = JSON.stringify({
           type: "reaction",
           text: emoji,
@@ -2652,6 +2731,7 @@ export function DashboardLayout() {
             encrypted_blob: encryptedBlob,
             message_id: targetMessageId,
             event_id: reactionEventId,
+            encrypted_push_preview: encryptedPushPreview,
             sender_vault_blob: encryptedLocal.ciphertext,
             sender_vault_iv: encryptedLocal.iv,
             sender_vault_signature_verified: true,
@@ -2834,6 +2914,9 @@ export function DashboardLayout() {
           showAddContact={!isActiveContactSaved}
           onStartCall={handleStartCall}
           isCallDisabled={callState.status !== "idle" || externalCallActive}
+          isMuted={isActiveContactMuted}
+          onMute={handleMuteConversation}
+          onUnmute={handleUnmuteConversation}
         />
 
         <div

@@ -2,8 +2,6 @@
 
 ## Group Chats
 
-## Link Embeds
-
 ## Built in TURN server for improved calls
 
 ## Improved Call Settings (quality, ...)
@@ -32,4 +30,4 @@ Blocking calls from unknowns
 
 ## Native app (?)
 
-# work out a proper versioning system
+## work out a proper versioning system

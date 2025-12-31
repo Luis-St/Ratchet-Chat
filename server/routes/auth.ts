@@ -519,6 +519,46 @@ export const createAuthRouter = (prisma: PrismaClient, io?: SocketIOServer) => {
     return res.json({ success: true });
   });
 
+  // Encrypted muted conversations endpoints (server only sees encrypted blob)
+  router.get("/muted-conversations", authenticateToken, async (req: Request, res: Response) => {
+    if (!req.user) return res.status(401).json({ error: "Unauthorized" });
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.id },
+      select: { encrypted_muted_conversations: true, encrypted_muted_conversations_iv: true },
+    });
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    if (!user.encrypted_muted_conversations || !user.encrypted_muted_conversations_iv) {
+      return res.json({ ciphertext: null, iv: null });
+    }
+
+    return res.json({
+      ciphertext: user.encrypted_muted_conversations,
+      iv: user.encrypted_muted_conversations_iv,
+    });
+  });
+
+  router.put("/muted-conversations", authenticateToken, async (req: Request, res: Response) => {
+    if (!req.user) return res.status(401).json({ error: "Unauthorized" });
+
+    const { ciphertext, iv } = req.body;
+    if (typeof ciphertext !== "string" || typeof iv !== "string") {
+      return res.status(400).json({ error: "Invalid request: ciphertext and iv required" });
+    }
+
+    await prisma.user.update({
+      where: { id: req.user.id },
+      data: {
+        encrypted_muted_conversations: ciphertext,
+        encrypted_muted_conversations_iv: iv,
+      },
+    });
+
+    io?.to(req.user.id).emit("MUTED_CONVERSATIONS_UPDATED", { ciphertext, iv });
+
+    return res.json({ success: true });
+  });
+
   router.patch("/keys/transport", authenticateToken, async (req: Request, res: Response) => {
     if (!req.user) return res.status(401).json({ error: "Unauthorized" });
     const parsed = rotateTransportKeySchema.safeParse(req.body);
@@ -1574,6 +1614,171 @@ export const createAuthRouter = (prisma: PrismaClient, io?: SocketIOServer) => {
     opaqueLoginSessions.delete(`unlock:${req.user.id}`);
 
     return res.json({ ok: true });
+  });
+
+  // ============================================
+  // Push Notification Endpoints
+  // ============================================
+
+  const pushSubscribeSchema = z.object({
+    endpoint: z.string().url(),
+    keys: z.object({
+      p256dh: z.string().min(1),
+      auth: z.string().min(1),
+    }),
+  });
+
+  // Register a push subscription for the current session
+  router.post("/push/subscribe", authenticateToken, async (req: Request, res: Response) => {
+    if (!req.user) return res.status(401).json({ error: "Unauthorized" });
+    if (!req.sessionId) return res.status(400).json({ error: "Session not found" });
+
+    const parsed = pushSubscribeSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Invalid request", details: parsed.error.issues });
+    }
+
+    const { endpoint, keys } = parsed.data;
+
+    // Check subscription limit per session (max 3 per session to prevent abuse)
+    const existingCount = await prisma.pushSubscription.count({
+      where: { session_id: req.sessionId },
+    });
+
+    if (existingCount >= 3) {
+      return res.status(400).json({ error: "Maximum push subscriptions reached for this session" });
+    }
+
+    // Upsert subscription (update if endpoint exists, create otherwise)
+    const subscription = await prisma.pushSubscription.upsert({
+      where: { endpoint },
+      update: {
+        p256dh_key: keys.p256dh,
+        auth_key: keys.auth,
+        user_agent: req.headers["user-agent"] || null,
+        last_used_at: new Date(),
+      },
+      create: {
+        session_id: req.sessionId,
+        endpoint,
+        p256dh_key: keys.p256dh,
+        auth_key: keys.auth,
+        user_agent: req.headers["user-agent"] || null,
+      },
+    });
+
+    return res.json({
+      subscription_id: subscription.id,
+      created_at: subscription.created_at.toISOString(),
+    });
+  });
+
+  // Unsubscribe from push notifications for the current session
+  router.delete("/push/subscribe", authenticateToken, async (req: Request, res: Response) => {
+    if (!req.user) return res.status(401).json({ error: "Unauthorized" });
+    if (!req.sessionId) return res.status(400).json({ error: "Session not found" });
+
+    await prisma.pushSubscription.deleteMany({
+      where: { session_id: req.sessionId },
+    });
+
+    return res.json({ ok: true });
+  });
+
+  // List all push subscriptions for the current user
+  router.get("/push/subscriptions", authenticateToken, async (req: Request, res: Response) => {
+    if (!req.user) return res.status(401).json({ error: "Unauthorized" });
+
+    const subscriptions = await prisma.pushSubscription.findMany({
+      where: {
+        session: { user_id: req.user.id },
+      },
+      include: {
+        session: {
+          select: {
+            id: true,
+            device_info: true,
+          },
+        },
+      },
+      orderBy: { created_at: "desc" },
+    });
+
+    return res.json({
+      subscriptions: subscriptions.map((sub) => ({
+        id: sub.id,
+        session_id: sub.session.id,
+        endpoint: sub.endpoint.slice(0, 50) + "...", // Truncate for privacy
+        device_info: sub.session.device_info,
+        is_current: sub.session_id === req.sessionId,
+        created_at: sub.created_at.toISOString(),
+        last_used_at: sub.last_used_at.toISOString(),
+      })),
+    });
+  });
+
+  // Send a test push notification (tests connectivity only - shows fallback message)
+  router.post("/push/test", authenticateToken, async (req: Request, res: Response) => {
+    if (!req.user) return res.status(401).json({ error: "Unauthorized" });
+    if (!req.sessionId) return res.status(400).json({ error: "Session not found" });
+
+    const { isPushConfigured, sendPushToUserWithPreview } = await import("../lib/webpush");
+
+    if (!isPushConfigured()) {
+      return res.status(503).json({ error: "Push notifications not configured on server" });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.id },
+      select: { username: true },
+    });
+
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const subscription = await prisma.pushSubscription.findFirst({
+      where: { session_id: req.sessionId },
+    });
+
+    if (!subscription) {
+      return res.status(404).json({ error: "No push subscription found for this session" });
+    }
+
+    // Send test notification without encrypted preview (will show fallback message)
+    // This tests push connectivity without requiring E2EE encryption
+    const result = await sendPushToUserWithPreview(
+      [{ id: subscription.id, endpoint: subscription.endpoint, p256dh_key: subscription.p256dh_key, auth_key: subscription.auth_key }],
+      "", // Empty preview - SW will show fallback
+      `Test from @${user.username}`
+    );
+
+    if (result.sent > 0) {
+      await prisma.pushSubscription.update({
+        where: { id: subscription.id },
+        data: { last_used_at: new Date() },
+      });
+      return res.json({ sent: true });
+    }
+
+    if (result.expired.length > 0) {
+      await prisma.pushSubscription.delete({ where: { id: subscription.id } });
+      return res.status(410).json({ error: "Push subscription expired" });
+    }
+
+    return res.status(500).json({ error: "Failed to send push notification" });
+  });
+
+  // Get VAPID public key for client registration
+  router.get("/push/vapid-key", async (_req: Request, res: Response) => {
+    const { getVapidPublicKey } = await import("../lib/webpush");
+    const key = getVapidPublicKey();
+
+    if (!key) {
+      return res.status(503).json({ error: "Push notifications not configured" });
+    }
+
+    return res.json({ vapidPublicKey: key });
   });
 
   return router;

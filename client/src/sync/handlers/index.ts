@@ -16,6 +16,9 @@ export type { Settings, SettingsApplyFn } from "./SettingsSyncHandler"
 export { PrivacySettingsSyncHandler } from "./PrivacySettingsSyncHandler"
 export type { PrivacySettingsApplyFn } from "./PrivacySettingsSyncHandler"
 
+export { MutedConversationsSyncHandler } from "./MutedConversationsSyncHandler"
+export type { MutedConversationsApplyFn } from "./MutedConversationsSyncHandler"
+
 export { SessionSyncHandler } from "./SessionSyncHandler"
 export type {
   SessionInvalidatedFn,

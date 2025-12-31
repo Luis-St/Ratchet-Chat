@@ -4,6 +4,7 @@ import * as React from "react"
 import { useSocket } from "./SocketContext"
 import { useAuth, type TransportKeyRotationPayload } from "./AuthContext"
 import { useBlock } from "./BlockContext"
+import { useMute } from "./MuteContext"
 import { useContacts } from "./ContactsContext"
 import {
   SyncManager,
@@ -17,6 +18,7 @@ import {
   TransportKeySyncHandler,
   SettingsSyncHandler,
   PrivacySettingsSyncHandler,
+  MutedConversationsSyncHandler,
   SessionSyncHandler,
   PasskeySyncHandler,
   type Settings,
@@ -63,6 +65,7 @@ export function SyncProvider({
     applyTransportKeyRotation,
   } = useAuth()
   const { isBlocked, applyEncryptedBlockList } = useBlock()
+  const { applyEncryptedMuteList } = useMute()
   const { applyEncryptedContacts } = useContacts()
   const [lastSync, setLastSync] = React.useState(0)
   const [isConnected, setIsConnected] = React.useState(false)
@@ -77,6 +80,7 @@ export function SyncProvider({
   const passkeyRemovedCallbackRef = React.useRef(onPasskeyRemoved)
   const sessionDeletedCallbackRef = React.useRef(onSessionDeleted)
   const applyBlockListRef = React.useRef(applyEncryptedBlockList)
+  const applyMuteListRef = React.useRef(applyEncryptedMuteList)
   const applyContactsRef = React.useRef(applyEncryptedContacts)
   const applyTransportKeyRef = React.useRef(applyTransportKeyRotation)
   const logoutRef = React.useRef(logout)
@@ -104,6 +108,10 @@ export function SyncProvider({
   React.useEffect(() => {
     applyBlockListRef.current = applyEncryptedBlockList
   }, [applyEncryptedBlockList])
+
+  React.useEffect(() => {
+    applyMuteListRef.current = applyEncryptedMuteList
+  }, [applyEncryptedMuteList])
 
   React.useEffect(() => {
     applyContactsRef.current = applyEncryptedContacts
@@ -151,6 +159,13 @@ export function SyncProvider({
     manager.registerHandler(
       new PrivacySettingsSyncHandler(async (encrypted) => {
         await privacySettingsCallbackRef.current?.(encrypted)
+      })
+    )
+
+    // Register Muted Conversations handler
+    manager.registerHandler(
+      new MutedConversationsSyncHandler(async (encrypted) => {
+        await applyMuteListRef.current(encrypted)
       })
     )
 
@@ -248,6 +263,7 @@ export function SyncProvider({
       manager.subscribe("BLOCK_LIST_UPDATED", () => bumpLastSync()),
       manager.subscribe("SETTINGS_UPDATED", () => bumpLastSync()),
       manager.subscribe("PRIVACY_SETTINGS_UPDATED", () => bumpLastSync()),
+      manager.subscribe("MUTED_CONVERSATIONS_UPDATED", () => bumpLastSync()),
     ]
 
     return () => {
