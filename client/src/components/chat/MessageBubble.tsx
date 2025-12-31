@@ -39,6 +39,7 @@ import { useSettings } from "@/hooks/useSettings"
 import { LinkEmbed, LinkEmbedSkeleton } from "@/components/chat/LinkEmbed"
 import { EmojiMartEmoji } from "@/components/emoji/EmojiMartEmoji"
 import type { StoredMessage } from "@/types/dashboard"
+import type { ResolvedTheme } from "@/hooks/useThemeCustomization"
 
 type MessageBubbleProps = {
   message: StoredMessage
@@ -49,6 +50,7 @@ type MessageBubbleProps = {
   isBusy: boolean
   editingMessage: StoredMessage | null
   highlightedMessageId: string | null
+  theme?: ResolvedTheme
   onMessageTap: (event: React.MouseEvent, message: StoredMessage) => void
   onScrollToMessage: (id: string) => void
   onPreviewImage: (src: string) => void
@@ -70,6 +72,7 @@ export function MessageBubble({
   isBusy,
   editingMessage,
   highlightedMessageId,
+  theme,
   onMessageTap,
   onScrollToMessage,
   onPreviewImage,
@@ -365,12 +368,13 @@ export function MessageBubble({
         >
           <div
             className={cn(
-              "w-fit max-w-full px-2.5 py-2.5 text-sm leading-relaxed shadow-sm transition-all duration-500 break-words [word-break:break-word] overflow-hidden",
+              "w-fit max-w-full text-sm leading-relaxed shadow-sm transition-all duration-500 break-words [word-break:break-word] overflow-hidden",
+              theme?.compactMode ? "px-2 py-1.5" : "px-2.5 py-2.5",
               highlightedMessageId === message.id &&
-                "ring-2 ring-emerald-500 ring-offset-2 dark:ring-offset-slate-900 scale-[1.02]",
+                "ring-2 ring-offset-2 dark:ring-offset-slate-900 scale-[1.02]",
               message.direction === "out"
-                ? "bg-emerald-100 dark:bg-emerald-900 text-foreground rounded-2xl rounded-br-sm"
-                : "bg-card dark:bg-muted text-foreground rounded-2xl rounded-bl-sm"
+                ? "rounded-2xl rounded-br-sm"
+                : "rounded-2xl rounded-bl-sm"
             )}
             onClick={(event) => {
               if (
@@ -389,6 +393,15 @@ export function MessageBubble({
               transform: swipeOffset ? `translateX(${swipeOffset}px)` : undefined,
               transition: isSwiping ? "none" : "transform 200ms ease",
               touchAction: isTouchActions ? "none" : undefined,
+              backgroundColor: message.direction === "out"
+                ? (theme?.outgoingBubble ?? "var(--bubble-outgoing)")
+                : (theme?.incomingBubble ?? "var(--bubble-incoming)"),
+              color: message.direction === "out"
+                ? (theme?.outgoingText ?? "var(--bubble-outgoing-text)")
+                : (theme?.incomingText ?? "var(--bubble-incoming-text)"),
+              ...(highlightedMessageId === message.id && {
+                "--tw-ring-color": theme?.accent ?? "var(--theme-accent)",
+              } as React.CSSProperties),
             }}
           >
             {message.replyTo?.messageId ? (
@@ -403,12 +416,9 @@ export function MessageBubble({
                 className={cn(
                   "mb-2 flex flex-col gap-0.5 rounded-md px-2 py-1 text-[11px]",
                   message.direction === "out"
-                    ? "bg-emerald-300/70 text-emerald-950 dark:bg-emerald-800/70 dark:text-emerald-100"
-                    : "bg-slate-200/80 text-slate-700 dark:bg-slate-700/60 dark:text-slate-200",
-                  replyTarget &&
-                    (message.direction === "out"
-                      ? "cursor-pointer hover:bg-emerald-300/90 dark:hover:bg-emerald-800/90"
-                      : "cursor-pointer hover:bg-slate-200/95 dark:hover:bg-slate-700/80")
+                    ? "bg-white/20 text-white/90"
+                    : "bg-black/10 text-foreground/80 dark:bg-white/10 dark:text-foreground/80",
+                  replyTarget && "cursor-pointer hover:bg-white/30 dark:hover:bg-white/20"
                 )}
               >
                 {replyTarget ? (
@@ -483,7 +493,18 @@ export function MessageBubble({
               ))
             )}
             {message.text && (
-              <div className="whitespace-pre-wrap prose prose-sm dark:prose-invert prose-emerald max-w-none prose-p:leading-relaxed prose-pre:bg-muted prose-pre:p-2 prose-pre:rounded-md prose-code:text-emerald-600 dark:prose-code:text-emerald-400 break-words [word-break:break-word]">
+              <div
+                className="whitespace-pre-wrap prose prose-sm max-w-none prose-p:leading-relaxed prose-pre:p-2 prose-pre:rounded-md break-words [word-break:break-word] prose-a:underline prose-code:rounded prose-code:px-1"
+                style={{
+                  // Force all prose elements to inherit text color from bubble
+                  ["--tw-prose-body" as string]: "inherit",
+                  ["--tw-prose-headings" as string]: "inherit",
+                  ["--tw-prose-links" as string]: "inherit",
+                  ["--tw-prose-bold" as string]: "inherit",
+                  ["--tw-prose-code" as string]: "inherit",
+                  ["--tw-prose-quotes" as string]: "inherit",
+                }}
+              >
                 <ReactMarkdown
                   remarkPlugins={[remarkGfm]}
                   components={markdownComponents}
@@ -505,26 +526,31 @@ export function MessageBubble({
             )}
             <div
               className={cn(
-                "mt-2 flex w-full items-center gap-1.5 text-[10px] uppercase tracking-wide text-muted-foreground",
+                "mt-2 flex w-full items-center gap-1.5 text-[10px] uppercase tracking-wide",
                 message.direction === "out" ? "justify-end text-right" : "justify-start"
               )}
+              style={{
+                color: message.direction === "out"
+                  ? (theme?.outgoingText ?? "var(--bubble-outgoing-text)")
+                  : (theme?.incomingText ?? "var(--bubble-incoming-text)"),
+              }}
             >
-              <span>{meta}</span>
-              {message.editedAt ? <span>Edited</span> : null}
+              <span style={{ opacity: 0.7 }}>{meta}</span>
+              {message.editedAt ? <span style={{ opacity: 0.7 }}>Edited</span> : null}
               {message.verified && (
                 <ShieldCheck
-                  className="h-3 w-3 text-emerald-500"
+                  className="h-3 w-3 text-emerald-400"
                   aria-label="Verified Signature"
                 />
               )}
               {receiptState ? (
                 receiptState === "DELIVERED" ? (
-                  <Check className="h-3 w-3" aria-label="Sent" />
+                  <Check className="h-3 w-3" style={{ opacity: 0.6 }} aria-label="Sent" />
                 ) : receiptState === "PROCESSED" ? (
-                  <CheckCheck className="h-3 w-3" aria-label="Delivered" />
+                  <CheckCheck className="h-3 w-3" style={{ opacity: 0.6 }} aria-label="Delivered" />
                 ) : receiptState === "READ" ? (
                   <CheckCheck
-                    className="h-3 w-3 text-sky-500"
+                    className="h-3 w-3 text-sky-400"
                     aria-label="Read"
                   />
                 ) : null

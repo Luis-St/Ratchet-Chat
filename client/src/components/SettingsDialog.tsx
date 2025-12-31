@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { Ban, Bell, Camera, ChevronLeft, ChevronRight, Copy, Eye, EyeOff, Fingerprint, Key, Lock, LogOut, Monitor, Plus, Server, Shield, Trash2, User, X } from "lucide-react"
+import { Ban, Bell, Camera, Check, ChevronLeft, ChevronRight, Copy, Eye, EyeOff, Fingerprint, Key, Lock, LogOut, Monitor, Palette, Plus, Server, Shield, Trash2, User, X } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
@@ -36,7 +36,8 @@ import {
   unsubscribeFromPush,
   isPushSubscribed,
 } from "@/lib/push"
-import type { PrivacyScope, MessageAcceptance } from "@/context/SettingsContext"
+import type { PrivacyScope, MessageAcceptance, ChatBackground, CustomizationSettings } from "@/context/SettingsContext"
+import { THEME_PRESETS, DEFAULT_CUSTOMIZATION, getThemePreset } from "@/context/SettingsContext"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -233,7 +234,7 @@ async function compressAvatarImage(
   throw new Error("Unable to compress image below size limit")
 }
 
-type SettingsPage = "personalization" | "privacy" | "notifications" | "access" | "security" | "blocking"
+type SettingsPage = "personalization" | "customization" | "privacy" | "notifications" | "access" | "security" | "blocking"
 
 export function SettingsDialog({
   open,
@@ -590,8 +591,14 @@ export function SettingsDialog({
     {
       id: "personalization",
       title: "Personalization",
-      description: "Profile picture and appearance.",
+      description: "Profile picture and display name.",
       icon: User,
+    },
+    {
+      id: "customization",
+      title: "Customization",
+      description: "Colors, themes, and chat appearance.",
+      icon: Palette,
     },
     {
       id: "privacy",
@@ -784,6 +791,203 @@ export function SettingsDialog({
         </div>
       </div>
     ),
+    customization: (() => {
+      const currentThemeId = settings.customization?.themeId ?? DEFAULT_CUSTOMIZATION.themeId
+      const currentPreset = getThemePreset(currentThemeId)
+      const isDark = typeof document !== "undefined" && document.documentElement.classList.contains("dark")
+      const colors = isDark ? currentPreset.dark : currentPreset.light
+
+      return (
+        <div className="space-y-6 py-4">
+          {/* Theme Presets */}
+          <div className="space-y-3">
+            <div className="space-y-1">
+              <h3 className="text-sm font-medium">Theme</h3>
+              <p className="text-xs text-muted-foreground">
+                Choose a color theme for your chat.
+              </p>
+            </div>
+            <div className="grid grid-cols-3 sm:grid-cols-4 gap-3">
+              {THEME_PRESETS.map((preset) => {
+                const presetColors = isDark ? preset.dark : preset.light
+                const isSelected = currentThemeId === preset.id
+                return (
+                  <button
+                    key={preset.id}
+                    className={cn(
+                      "relative rounded-xl border-2 p-2 transition-all hover:scale-[1.02]",
+                      isSelected
+                        ? "border-foreground shadow-md"
+                        : "border-muted hover:border-muted-foreground/50"
+                    )}
+                    onClick={() => {
+                      const newCustomization = {
+                        ...(settings.customization ?? DEFAULT_CUSTOMIZATION),
+                        themeId: preset.id,
+                      }
+                      void updateSettings({ customization: newCustomization })
+                    }}
+                  >
+                    {/* Mini preview */}
+                    <div className="space-y-1.5 rounded-lg bg-background p-2">
+                      <div
+                        className="h-4 w-3/4 rounded-lg rounded-bl-sm text-[6px] flex items-center px-1"
+                        style={{
+                          backgroundColor: presetColors.incomingBubble,
+                          color: presetColors.incomingText,
+                        }}
+                      >
+                        Hi!
+                      </div>
+                      <div
+                        className="h-4 w-3/4 ml-auto rounded-lg rounded-br-sm text-[6px] flex items-center justify-end px-1"
+                        style={{
+                          backgroundColor: presetColors.outgoingBubble,
+                          color: presetColors.outgoingText,
+                        }}
+                      >
+                        Hey!
+                      </div>
+                    </div>
+                    <p className="mt-1.5 text-[10px] font-medium truncate">{preset.name}</p>
+                    {isSelected && (
+                      <div
+                        className="absolute -top-1.5 -right-1.5 h-5 w-5 rounded-full flex items-center justify-center"
+                        style={{ backgroundColor: preset.accent }}
+                      >
+                        <Check className="h-3 w-3 text-white" />
+                      </div>
+                    )}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+
+          <Separator />
+
+          {/* Live Preview */}
+          <div className="space-y-3">
+            <div className="space-y-1">
+              <Label className="text-sm font-medium">Preview</Label>
+              <p className="text-xs text-muted-foreground">
+                See how your messages will look.
+              </p>
+            </div>
+            <div
+              className={cn(
+                "rounded-lg border p-4 space-y-2",
+                settings.customization?.chatBackground === "dots" && "chat-bg-dots",
+                settings.customization?.chatBackground === "grid" && "chat-bg-grid",
+                settings.customization?.chatBackground === "waves" && "chat-bg-waves"
+              )}
+            >
+              <div className="flex justify-start">
+                <div
+                  className={cn(
+                    "max-w-[75%] rounded-2xl rounded-bl-sm text-xs",
+                    settings.customization?.compactMode ? "px-2 py-1" : "px-3 py-2"
+                  )}
+                  style={{
+                    backgroundColor: colors.incomingBubble,
+                    color: colors.incomingText,
+                  }}
+                >
+                  Hey! How are you?
+                </div>
+              </div>
+              <div className="flex justify-end">
+                <div
+                  className={cn(
+                    "max-w-[75%] rounded-2xl rounded-br-sm text-xs",
+                    settings.customization?.compactMode ? "px-2 py-1" : "px-3 py-2"
+                  )}
+                  style={{
+                    backgroundColor: colors.outgoingBubble,
+                    color: colors.outgoingText,
+                  }}
+                >
+                  I&apos;m doing great! 🎉
+                </div>
+              </div>
+              <div className="flex justify-start">
+                <div
+                  className={cn(
+                    "max-w-[75%] rounded-2xl rounded-bl-sm text-xs",
+                    settings.customization?.compactMode ? "px-2 py-1" : "px-3 py-2"
+                  )}
+                  style={{
+                    backgroundColor: colors.incomingBubble,
+                    color: colors.incomingText,
+                  }}
+                >
+                  That&apos;s awesome!
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <Separator />
+
+          {/* Chat Background */}
+          <div className="space-y-3">
+            <div className="space-y-1">
+              <Label className="text-sm font-medium">Chat Background</Label>
+              <p className="text-xs text-muted-foreground">
+                Pattern for the chat area.
+              </p>
+            </div>
+            <div className="grid grid-cols-4 gap-2">
+              {(["none", "dots", "grid", "waves"] as ChatBackground[]).map((bg) => (
+                <button
+                  key={bg}
+                  className={cn(
+                    "h-14 rounded-lg border-2 transition-all flex items-center justify-center text-xs capitalize",
+                    settings.customization?.chatBackground === bg
+                      ? "border-foreground"
+                      : "border-muted hover:border-muted-foreground/50",
+                    bg === "dots" && "chat-bg-dots",
+                    bg === "grid" && "chat-bg-grid",
+                    bg === "waves" && "chat-bg-waves"
+                  )}
+                  onClick={() => {
+                    const newCustomization = {
+                      ...(settings.customization ?? DEFAULT_CUSTOMIZATION),
+                      chatBackground: bg,
+                    }
+                    void updateSettings({ customization: newCustomization })
+                  }}
+                >
+                  {bg}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <Separator />
+
+          {/* Compact Mode */}
+          <div className="flex items-center justify-between space-x-2">
+            <div className="space-y-1">
+              <Label className="text-sm font-medium">Compact Mode</Label>
+              <p className="text-xs text-muted-foreground">
+                Denser message spacing.
+              </p>
+            </div>
+            <Switch
+              checked={settings.customization?.compactMode ?? false}
+              onCheckedChange={(checked) => {
+                const newCustomization = {
+                  ...(settings.customization ?? DEFAULT_CUSTOMIZATION),
+                  compactMode: checked,
+                }
+                void updateSettings({ customization: newCustomization })
+              }}
+            />
+          </div>
+        </div>
+      )
+    })(),
     privacy: (
       <div className="space-y-6 py-4">
         {/* Message Acceptance */}

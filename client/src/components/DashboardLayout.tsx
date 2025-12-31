@@ -29,6 +29,7 @@ import { useCall } from "@/context/CallContext"
 import { useContacts } from "@/context/ContactsContext"
 import { useSocket } from "@/context/SocketContext"
 import { useSettings } from "@/hooks/useSettings"
+import { useThemeCustomization } from "@/hooks/useThemeCustomization"
 import { useRatchetSync } from "@/hooks/useRatchetSync"
 import { apiFetch } from "@/lib/api"
 import { getContactDisplayName, normalizeNickname } from "@/lib/contacts"
@@ -163,6 +164,7 @@ export function DashboardLayout() {
   const { theme } = useTheme()
   const socket = useSocket()
   const { settings } = useSettings()
+  const customization = useThemeCustomization()
   const { initiateCall, callState, handleCallMessage, externalCallActive } = useCall()
   const { isBlocked, blockUser } = useBlock()
   const { isMuted, muteConversation, unmuteConversation } = useMute()
@@ -3034,9 +3036,21 @@ export function DashboardLayout() {
           onDrop={handleDropAttachment}
         >
           <div className="pointer-events-none absolute inset-0 z-0 bg-[radial-gradient(circle_at_top,_var(--chat-glow),_transparent_55%)]" />
-          <div className="pointer-events-none absolute inset-0 z-0 opacity-40 bg-[linear-gradient(90deg,var(--chat-grid)_1px,transparent_1px),linear-gradient(0deg,var(--chat-grid)_1px,transparent_1px)] bg-[size:32px_32px]" />
+          <div className={cn(
+            "pointer-events-none absolute inset-0 z-0 opacity-40",
+            customization.chatBackground === "dots" && "chat-bg-dots",
+            customization.chatBackground === "grid" && "chat-bg-grid",
+            customization.chatBackground === "waves" && "chat-bg-waves"
+          )} />
           {isDragOver ? (
-            <div className="pointer-events-none absolute inset-4 z-20 flex items-center justify-center rounded-2xl border-2 border-dashed border-emerald-300 bg-emerald-50/80 text-sm font-medium text-emerald-700 shadow-lg dark:border-emerald-400/50 dark:bg-emerald-900/40 dark:text-emerald-100">
+            <div
+              className="pointer-events-none absolute inset-4 z-20 flex items-center justify-center rounded-2xl border-2 border-dashed text-sm font-medium shadow-lg"
+              style={{
+                borderColor: "var(--theme-accent)",
+                backgroundColor: "color-mix(in srgb, var(--theme-accent-light) 80%, transparent)",
+                color: "var(--theme-accent-dark)",
+              }}
+            >
               Drop file to attach
             </div>
           ) : null}
@@ -3202,6 +3216,7 @@ export function DashboardLayout() {
                         onEdit={beginEdit}
                         onDelete={(msg) => void handleDeleteMessage(msg)}
                         searchQuery={chatSearchQuery}
+                        theme={customization}
                       />
                     )
                   })}
