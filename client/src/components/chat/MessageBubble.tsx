@@ -251,9 +251,6 @@ export function MessageBubble({
       if (!isTouchActions) return
       const start = swipeStartRef.current
       if (!start) return
-      if (event.cancelable) {
-        event.preventDefault()
-      }
       const touch = event.touches[0]
       if (!touch) return
       const dx = touch.clientX - start.x
@@ -264,15 +261,13 @@ export function MessageBubble({
         if (absX < 6 && absY < 6) return
         swipeAxisRef.current = absX > absY + 8 ? "x" : "y"
       }
+      // Allow vertical scrolling - only handle horizontal swipes
       if (swipeAxisRef.current === "y") {
         return
       }
       if (start.target instanceof HTMLElement) {
-        if (
-          start.target.closest(
-            'a,button,input,textarea,select,label,[data-no-action-toggle="true"],[data-no-swipe="true"]'
-          )
-        ) {
+        // Only block swipe on elements that explicitly disable it
+        if (start.target.closest('[data-no-swipe="true"]')) {
           swipeAxisRef.current = null
           swipeStartRef.current = null
           setIsSwiping(false)
@@ -280,6 +275,7 @@ export function MessageBubble({
           return
         }
       }
+      // Only prevent default for horizontal swipes
       if (event.cancelable) {
         event.preventDefault()
       }
@@ -392,7 +388,7 @@ export function MessageBubble({
             style={{
               transform: swipeOffset ? `translateX(${swipeOffset}px)` : undefined,
               transition: isSwiping ? "none" : "transform 200ms ease",
-              touchAction: isTouchActions ? "none" : undefined,
+              touchAction: isTouchActions ? "pan-y" : undefined,
               backgroundColor: message.direction === "out"
                 ? (theme?.outgoingBubble ?? "var(--bubble-outgoing)")
                 : (theme?.incomingBubble ?? "var(--bubble-incoming)"),
@@ -466,7 +462,8 @@ export function MessageBubble({
                     <img
                       src={`data:${att.mimeType};base64,${att.data}`}
                       alt={att.filename}
-                      className="max-w-full h-auto max-h-64 object-cover cursor-pointer hover:opacity-90 transition-opacity"
+                      className="max-w-full h-auto max-h-64 object-cover cursor-pointer hover:opacity-90 transition-opacity touch-pan-y"
+                      draggable={false}
                       onClick={() =>
                         onPreviewImage(`data:${att.mimeType};base64,${att.data}`)
                       }

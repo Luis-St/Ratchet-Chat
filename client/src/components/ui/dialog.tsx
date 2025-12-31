@@ -41,6 +41,8 @@ const DialogContent = React.forwardRef<
   const [dragOffset, setDragOffset] = React.useState(0)
   const dragOffsetRef = React.useRef(0)
   const startYRef = React.useRef(0)
+  const swipeAxisRef = React.useRef<"x" | "y" | null>(null)
+  const startScrollTopRef = React.useRef(0)
 
   React.useEffect(() => {
     if (typeof window === "undefined") {
@@ -59,50 +61,70 @@ const DialogContent = React.forwardRef<
     setDragOffset(nextOffset)
   }
 
-  const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (!isMobile || event.pointerType === "mouse") {
-      return
+  const getScrollableParent = (element: HTMLElement | null): HTMLElement | null => {
+    if (!element) return null
+    if (element.scrollHeight > element.clientHeight && element.scrollTop > 0) {
+      return element
     }
-
-    event.preventDefault()
-    startYRef.current = event.clientY
-    setIsDragging(true)
-    event.currentTarget.setPointerCapture(event.pointerId)
+    return getScrollableParent(element.parentElement)
   }
 
-  const handlePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (!isDragging) {
-      return
-    }
+  const handleTouchStart = (event: React.TouchEvent<HTMLDivElement>) => {
+    if (!isMobile) return
+    const touch = event.touches[0]
+    if (!touch) return
 
-    const nextOffset = Math.max(0, event.clientY - startYRef.current)
-    updateDragOffset(nextOffset)
+    swipeAxisRef.current = null
+    startYRef.current = touch.clientY
+
+    // Check if any scrollable parent is scrolled
+    const scrollableParent = getScrollableParent(event.target as HTMLElement)
+    startScrollTopRef.current = scrollableParent?.scrollTop ?? 0
   }
 
-  const handlePointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (!isDragging) {
-      return
+  const handleTouchMove = (event: React.TouchEvent<HTMLDivElement>) => {
+    if (!isMobile) return
+    const touch = event.touches[0]
+    if (!touch) return
+
+    const dy = touch.clientY - startYRef.current
+    const dx = Math.abs(touch.clientX - (event.touches[0]?.clientX ?? 0))
+
+    // Determine swipe axis if not set
+    if (!swipeAxisRef.current) {
+      if (Math.abs(dy) < 10 && dx < 10) return
+      swipeAxisRef.current = Math.abs(dy) > dx ? "y" : "x"
     }
 
-    event.currentTarget.releasePointerCapture(event.pointerId)
+    if (swipeAxisRef.current !== "y") return
+
+    // Only allow drag-to-close when at the top of scroll
+    if (startScrollTopRef.current > 0) return
+    if (dy <= 0) return // Only drag down
+
+    if (!isDragging) {
+      setIsDragging(true)
+    }
+
+    updateDragOffset(Math.max(0, dy))
+  }
+
+  const handleTouchEnd = () => {
+    if (!isMobile) return
+
+    swipeAxisRef.current = null
+
+    if (!isDragging) return
+
     setIsDragging(false)
 
-    const threshold = Math.min(180, window.innerHeight * 0.25)
+    const threshold = Math.min(150, window.innerHeight * 0.2)
     if (dragOffsetRef.current > threshold) {
       closeRef.current?.click()
+      updateDragOffset(0)
       return
     }
 
-    updateDragOffset(0)
-  }
-
-  const handlePointerCancel = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (!isDragging) {
-      return
-    }
-
-    event.currentTarget.releasePointerCapture(event.pointerId)
-    setIsDragging(false)
     updateDragOffset(0)
   }
 
@@ -117,23 +139,22 @@ const DialogContent = React.forwardRef<
       <DialogPrimitive.Content
         ref={ref}
         className={cn(
-          "fixed inset-0 z-50 grid h-[100dvh] w-full max-w-none gap-4 border border-border/70 bg-background p-6 pb-[calc(env(safe-area-inset-bottom)+1.5rem)] shadow-2xl transition-transform data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:slide-out-to-bottom-6 data-[state=open]:slide-in-from-bottom-6 data-[dragging=true]:duration-0 data-[dragging=true]:ease-linear sm:inset-auto sm:left-[50%] sm:top-[50%] sm:h-auto sm:max-h-[85vh] sm:max-w-lg sm:translate-x-[-50%] sm:translate-y-[-50%] sm:overflow-y-auto sm:rounded-lg sm:shadow-lg sm:data-[state=closed]:zoom-out-95 sm:data-[state=open]:zoom-in-95 sm:data-[state=closed]:slide-out-to-left-1/2 sm:data-[state=closed]:slide-out-to-top-[48%] sm:data-[state=open]:slide-in-from-left-1/2 sm:data-[state=open]:slide-in-from-top-[48%]",
+          "fixed inset-0 z-50 grid h-[100dvh] w-full max-w-none gap-4 border border-border/70 bg-background px-6 pt-8 pb-[calc(env(safe-area-inset-bottom)+1.5rem)] shadow-2xl transition-transform overflow-y-auto data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:slide-out-to-bottom-6 data-[state=open]:slide-in-from-bottom-6 data-[dragging=true]:duration-0 data-[dragging=true]:ease-linear sm:inset-auto sm:left-[50%] sm:top-[50%] sm:h-auto sm:max-h-[85vh] sm:max-w-lg sm:translate-x-[-50%] sm:translate-y-[-50%] sm:overflow-y-auto sm:rounded-lg sm:p-6 sm:shadow-lg sm:data-[state=closed]:zoom-out-95 sm:data-[state=open]:zoom-in-95 sm:data-[state=closed]:slide-out-to-left-1/2 sm:data-[state=closed]:slide-out-to-top-[48%] sm:data-[state=open]:slide-in-from-left-1/2 sm:data-[state=open]:slide-in-from-top-[48%]",
           className
         )}
         data-dragging={isDragging ? "true" : "false"}
         style={contentStyle}
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
         {...props}
       >
         {isMobile ? (
           <div
-            className="absolute inset-x-0 top-0 z-10 flex h-10 items-start justify-center pt-2 touch-none"
-            onPointerDown={handlePointerDown}
-            onPointerMove={handlePointerMove}
-            onPointerUp={handlePointerUp}
-            onPointerCancel={handlePointerCancel}
+            className="absolute inset-x-0 top-0 z-10 flex h-6 items-center justify-center"
             aria-hidden="true"
           >
-            <span className="h-1.5 w-12 rounded-full bg-foreground/20" />
+            <span className="h-1 w-10 rounded-full bg-foreground/20" />
           </div>
         ) : null}
         {children}
@@ -143,7 +164,7 @@ const DialogContent = React.forwardRef<
           tabIndex={-1}
           aria-hidden="true"
         />
-        <DialogPrimitive.Close className="absolute right-4 top-4 rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none data-[state=open]:bg-accent data-[state=open]:text-muted-foreground">
+        <DialogPrimitive.Close className="absolute right-4 top-4 z-20 rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none data-[state=open]:bg-accent data-[state=open]:text-muted-foreground">
           <X className="h-4 w-4" />
           <span className="sr-only">Close</span>
         </DialogPrimitive.Close>
