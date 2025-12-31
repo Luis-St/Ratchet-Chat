@@ -198,7 +198,7 @@ export function DashboardLayout() {
   const [showRecipientInfo, setShowRecipientInfo] = React.useState(false)
   const [showBlockConfirm, setShowBlockConfirm] = React.useState(false)
   const [addToContactsOnAccept, setAddToContactsOnAccept] = React.useState(false)
-  const [attachment, setAttachment] = React.useState<{ name: string; type: string; size: number; data: string } | null>(null)
+  const [attachments, setAttachments] = React.useState<{ name: string; type: string; size: number; data: string }[]>([])
   const [previewImage, setPreviewImage] = React.useState<string | null>(null)
   const [pendingLink, setPendingLink] = React.useState<string | null>(null)
   const [activeActionMessageId, setActiveActionMessageId] = React.useState<string | null>(null)
@@ -1195,7 +1195,7 @@ export function DashboardLayout() {
       setEditingMessage(null)
       setComposeText("")
       setSendError(null)
-      setAttachment(null)
+      setAttachments([])
     }
   }, [activeContact, editingMessage])
 
@@ -1995,8 +1995,12 @@ export function DashboardLayout() {
     [upsertContact]
   )
 
-  const handleAttachFile = React.useCallback(
-    async (file: File) => {
+  const MAX_FILE_SIZE = 10 * 1024 * 1024 // 10 MB per file
+  const MAX_TOTAL_SIZE = 15 * 1024 * 1024 // 15 MB total
+  const MAX_FILE_COUNT = 10
+
+  const handleAttachFiles = React.useCallback(
+    async (files: File[]) => {
       if (!activeContact) {
         setSendError("Select a chat before attaching files.")
         return
@@ -2008,39 +2012,87 @@ export function DashboardLayout() {
       if (isBusy) {
         return
       }
-      if (file.size > 10 * 1024 * 1024) {
-        setSendError("File too large (max 10MB)")
+
+      // Calculate current total size
+      const currentTotalSize = attachments.reduce((sum, a) => sum + a.size, 0)
+      const currentCount = attachments.length
+
+      // Filter and validate files
+      const validFiles: File[] = []
+      let newTotalSize = currentTotalSize
+
+      for (const file of files) {
+        // Check file count limit
+        if (currentCount + validFiles.length >= MAX_FILE_COUNT) {
+          setSendError(`Maximum ${MAX_FILE_COUNT} files allowed`)
+          break
+        }
+
+        // Check individual file size
+        if (file.size > MAX_FILE_SIZE) {
+          setSendError(`"${file.name}" is too large (max 10MB per file)`)
+          continue
+        }
+
+        // Check total size limit
+        if (newTotalSize + file.size > MAX_TOTAL_SIZE) {
+          setSendError(`Total attachment size exceeds 15MB limit`)
+          break
+        }
+
+        validFiles.push(file)
+        newTotalSize += file.size
+      }
+
+      if (validFiles.length === 0) {
         return
       }
-      const reader = new FileReader()
-      reader.onload = () => {
-        const dataUrl = reader.result as string
-        const base64 = dataUrl.split(",")[1]
-        if (!base64) {
-          setSendError("Unable to read file.")
-          return
-        }
-        setAttachment({
-          name: file.name,
-          type: file.type,
-          size: file.size,
-          data: base64,
+
+      // Read all valid files
+      const readFile = (file: File): Promise<{ name: string; type: string; size: number; data: string } | null> => {
+        return new Promise((resolve) => {
+          const reader = new FileReader()
+          reader.onload = () => {
+            const dataUrl = reader.result as string
+            const base64 = dataUrl.split(",")[1]
+            if (!base64) {
+              resolve(null)
+              return
+            }
+            resolve({
+              name: file.name,
+              type: file.type,
+              size: file.size,
+              data: base64,
+            })
+          }
+          reader.onerror = () => resolve(null)
+          reader.readAsDataURL(file)
         })
+      }
+
+      const results = await Promise.all(validFiles.map(readFile))
+      const newAttachments = results.filter((r): r is NonNullable<typeof r> => r !== null)
+
+      if (newAttachments.length > 0) {
+        setAttachments((prev) => [...prev, ...newAttachments])
         setSendError(null)
-        if (fileInputRef.current) fileInputRef.current.value = ""
       }
-      reader.onerror = () => {
-        setSendError("Unable to read file.")
-      }
-      reader.readAsDataURL(file)
+
+      if (fileInputRef.current) fileInputRef.current.value = ""
     },
-    [activeContact, editingMessage, isBusy]
+    [activeContact, editingMessage, isBusy, attachments]
+  )
+
+  const handleAttachFile = React.useCallback(
+    (file: File) => handleAttachFiles([file]),
+    [handleAttachFiles]
   )
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) return
-    void handleAttachFile(file)
+    const files = e.target.files
+    if (!files || files.length === 0) return
+    void handleAttachFiles(Array.from(files))
   }
 
   const handlePasteAttachment = React.useCallback(
@@ -2158,7 +2210,7 @@ export function DashboardLayout() {
     setEditingMessage(message)
     setComposeText(message.text)
     setSendError(null)
-    setAttachment(null)
+    setAttachments([])
     setReactionPickerId(null)
     if (fileInputRef.current) fileInputRef.current.value = ""
     requestAnimationFrame(() => textareaRef.current?.focus())
@@ -2193,7 +2245,7 @@ export function DashboardLayout() {
 
   const handleSendMessage = React.useCallback(async () => {
     const trimmed = composeText.trim()
-    if (!trimmed && !attachment) {
+    if (!trimmed && attachments.length === 0) {
       return
     }
     if (!activeContact || !masterKey || !identityPrivateKey || !publicIdentityKey) {
@@ -2234,12 +2286,14 @@ export function DashboardLayout() {
         identityPrivateKey
       )
       
-      const attachments = attachment ? [{
-        filename: attachment.name,
-        mimeType: attachment.type,
-        size: attachment.size,
-        data: attachment.data
-      }] : undefined
+      const messageAttachments = attachments.length > 0
+        ? attachments.map((a) => ({
+            filename: a.name,
+            mimeType: a.type,
+            size: a.size,
+            data: a.data,
+          }))
+        : undefined
       const replyPayload = replyToMessage
         ? buildReplyPayload(replyToMessage)
         : null
@@ -2250,7 +2304,7 @@ export function DashboardLayout() {
         sender_signature: signature,
         sender_identity_key: publicIdentityKey,
         message_id: messageId,
-        attachments,
+        attachments: messageAttachments,
         ...(replyPayload ?? {}),
       })
       const encryptedBlob = await encryptTransitEnvelope(
@@ -2264,14 +2318,19 @@ export function DashboardLayout() {
       const senderAvatarUrl = settings.avatarFilename
         ? `${process.env.NEXT_PUBLIC_API_URL}/uploads/avatars/${settings.avatarFilename}`
         : undefined
+      const attachmentPreviewText = attachments.length > 0
+        ? attachments.length === 1
+          ? `📎 ${attachments[0].name}`
+          : `📎 ${attachments.length} files`
+        : null
       const encryptedPushPreview = await createEncryptedPushPreview(
         {
           type: "message",
           sender_handle: user.handle,
           sender_display_name: user.username || undefined,
           sender_avatar_url: senderAvatarUrl,
-          preview: attachment
-            ? `📎 ${attachment.name}${previewText ? `: ${previewText}` : ""}`
+          preview: attachmentPreviewText
+            ? `${attachmentPreviewText}${previewText ? `: ${previewText}` : ""}`
             : previewText,
           message_id: messageId,
         },
@@ -2280,7 +2339,7 @@ export function DashboardLayout() {
 
       const localPayload = JSON.stringify({
         text: trimmed,
-        attachments,
+        attachments: messageAttachments,
         peerHandle: activeContact.handle,
         peerUsername: getContactDisplayName(activeContact),
         peerHost: activeContact.host,
@@ -2339,7 +2398,7 @@ export function DashboardLayout() {
       })
       setComposeText("")
       setReplyToMessage(null)
-      setAttachment(null)
+      setAttachments([])
       if (fileInputRef.current) fileInputRef.current.value = ""
     } catch (error) {
       setSendError(
@@ -2357,7 +2416,7 @@ export function DashboardLayout() {
     updateMessagePayload,
     user?.handle,
     user?.id,
-    attachment,
+    attachments,
     replyToMessage,
     buildReplyPayload,
   ])
@@ -3160,15 +3219,19 @@ export function DashboardLayout() {
             onComposeTextChange={setComposeText}
             editingMessage={editingMessage}
             replyToMessage={replyToMessage}
-            attachment={attachment}
+            attachments={attachments}
             isBusy={isBusy}
             sendError={sendError}
             textareaRef={textareaRef}
             fileInputRef={fileInputRef}
             onCancelEdit={cancelEdit}
             onCancelReply={cancelReply}
-            onRemoveAttachment={() => {
-              setAttachment(null)
+            onRemoveAttachment={(index) => {
+              setAttachments((prev) => prev.filter((_, i) => i !== index))
+              if (fileInputRef.current) fileInputRef.current.value = ""
+            }}
+            onClearAttachments={() => {
+              setAttachments([])
               if (fileInputRef.current) fileInputRef.current.value = ""
             }}
             onFileSelect={handleFileSelect}

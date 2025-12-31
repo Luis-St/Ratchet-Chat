@@ -27,14 +27,15 @@ type ComposeAreaProps = {
   onComposeTextChange: (text: string) => void
   editingMessage: StoredMessage | null
   replyToMessage: StoredMessage | null
-  attachment: AttachmentPreview | null
+  attachments: AttachmentPreview[]
   isBusy: boolean
   sendError: string | null
   textareaRef: React.RefObject<HTMLTextAreaElement | null>
   fileInputRef: React.RefObject<HTMLInputElement | null>
   onCancelEdit: () => void
   onCancelReply: () => void
-  onRemoveAttachment: () => void
+  onRemoveAttachment: (index: number) => void
+  onClearAttachments: () => void
   onFileSelect: (e: React.ChangeEvent<HTMLInputElement>) => void
   onTyping: () => void
   onSubmit: () => void
@@ -48,7 +49,7 @@ export function ComposeArea({
   onComposeTextChange,
   editingMessage,
   replyToMessage,
-  attachment,
+  attachments,
   isBusy,
   sendError,
   textareaRef,
@@ -56,6 +57,7 @@ export function ComposeArea({
   onCancelEdit,
   onCancelReply,
   onRemoveAttachment,
+  onClearAttachments,
   onFileSelect,
   onTyping,
   onSubmit,
@@ -112,39 +114,63 @@ export function ComposeArea({
           </Button>
         </div>
       ) : null}
-      {attachment && (
-        <div className="mb-3 flex items-center justify-between rounded-lg border bg-card p-2 shadow-sm">
-          <div className="flex items-center gap-3">
-            {attachment.type.startsWith("image/") ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={`data:${attachment.type};base64,${attachment.data}`}
-                alt="Preview"
-                className="h-10 w-10 rounded-md object-cover"
-              />
-            ) : (
-              <div className="flex h-10 w-10 items-center justify-center rounded-md bg-muted">
-                <FileIcon className="h-5 w-5 text-muted-foreground" />
-              </div>
+      {attachments.length > 0 && (
+        <div className="mb-3 rounded-lg border bg-card p-2 shadow-sm">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs text-muted-foreground">
+              {attachments.length} file{attachments.length > 1 ? "s" : ""} ({(attachments.reduce((sum, a) => sum + a.size, 0) / 1024 / 1024).toFixed(1)} MB)
+            </span>
+            {attachments.length > 1 && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 px-2 text-xs text-muted-foreground hover:text-destructive"
+                onClick={onClearAttachments}
+              >
+                Clear all
+              </Button>
             )}
-            <div className="flex flex-col">
-              <span className="text-xs font-medium max-w-[200px] truncate">
-                {attachment.name}
-              </span>
-              <span className="text-[10px] text-muted-foreground">
-                {(attachment.size / 1024).toFixed(1)} KB
-              </span>
-            </div>
           </div>
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            className="text-muted-foreground hover:text-destructive"
-            onClick={onRemoveAttachment}
-            title="Remove attachment"
-          >
-            <X className="h-4 w-4" />
-          </Button>
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
+            {attachments.map((attachment, index) => (
+              <div
+                key={index}
+                className="relative group flex items-center gap-2 rounded-md border bg-muted/50 p-1.5"
+              >
+                {attachment.type.startsWith("image/") ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={`data:${attachment.type};base64,${attachment.data}`}
+                    alt="Preview"
+                    className="h-8 w-8 rounded object-cover shrink-0"
+                  />
+                ) : (
+                  <div className="flex h-8 w-8 items-center justify-center rounded bg-muted shrink-0">
+                    <FileIcon className="h-4 w-4 text-muted-foreground" />
+                  </div>
+                )}
+                <div className="flex flex-col min-w-0 flex-1">
+                  <span className="text-[10px] font-medium truncate">
+                    {attachment.name}
+                  </span>
+                  <span className="text-[9px] text-muted-foreground">
+                    {attachment.size < 1024 * 1024
+                      ? `${(attachment.size / 1024).toFixed(0)} KB`
+                      : `${(attachment.size / 1024 / 1024).toFixed(1)} MB`}
+                  </span>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  className="absolute -top-1 -right-1 h-5 w-5 rounded-full bg-background border shadow-sm opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive"
+                  onClick={() => onRemoveAttachment(index)}
+                  title="Remove"
+                >
+                  <X className="h-3 w-3" />
+                </Button>
+              </div>
+            ))}
+          </div>
         </div>
       )}
       <Card className="border-border bg-card/90 shadow-sm">
@@ -154,6 +180,7 @@ export function ComposeArea({
             className="hidden"
             ref={fileInputRef}
             onChange={onFileSelect}
+            multiple
           />
           <Button
             variant="ghost"
@@ -183,9 +210,9 @@ export function ComposeArea({
             onPaste={onPaste}
             onKeyDown={(event) => {
               if (event.key === "Escape") {
-                if (attachment) {
+                if (attachments.length > 0) {
                   event.preventDefault()
-                  onRemoveAttachment()
+                  onClearAttachments()
                   return
                 }
                 if (replyToMessage) {
@@ -210,7 +237,7 @@ export function ComposeArea({
             variant="accept"
             className="h-9 w-9 shrink-0 p-0 sm:h-10 sm:w-10"
             disabled={
-              (!composeText.trim() && (!attachment || Boolean(editingMessage))) ||
+              (!composeText.trim() && (attachments.length === 0 || Boolean(editingMessage))) ||
               !activeContact ||
               isBusy
             }
