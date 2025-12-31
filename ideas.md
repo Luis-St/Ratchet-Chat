@@ -31,3 +31,9 @@ Blocking calls from unknowns
 ## Native app (?)
 
 ## work out a proper versioning system
+
+## Account recovery procedure if lost access to passkeys (proof with master password?)
+
+## Master password changing ability
+
+## master password reset if forgot/lost (only through valid passkey session, deletes/resets ALL encrypted data)

@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { Ban, Bell, Camera, Check, ChevronLeft, ChevronRight, Copy, Eye, EyeOff, Fingerprint, Key, Lock, LogOut, Monitor, Palette, Plus, Server, Shield, Trash2, User, X } from "lucide-react"
+import { Ban, Bell, Camera, Check, ChevronLeft, ChevronRight, Copy, Eye, EyeOff, Fingerprint, Info, Key, Lock, LogOut, Monitor, Palette, Plus, Server, Shield, Trash2, User, X } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
@@ -43,6 +43,9 @@ import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Separator } from "@/components/ui/separator"
+import { AppInfoDialog } from "@/components/AppInfoDialog"
+import { WhatsNewBadge } from "@/components/WhatsNewBadge"
+import { useWhatsNew } from "@/hooks/useWhatsNew"
 
 function parseDeviceInfo(userAgent: string | null): string {
   if (!userAgent) return "Unknown device"
@@ -248,6 +251,7 @@ export function SettingsDialog({
   const { callState } = useCall()
   const { settings, updateSettings } = useSettings()
   const { subscribe } = useSync()
+  const { hasNewVersion, markAsSeen, currentVersion } = useWhatsNew()
   const isInActiveCall = callState.status !== "idle" && callState.status !== "ended"
   const avatarUrl = settings.avatarFilename
     ? `${process.env.NEXT_PUBLIC_API_URL}/uploads/avatars/${settings.avatarFilename}`
@@ -1727,6 +1731,25 @@ export function SettingsDialog({
               </div>
             </ScrollArea>
           )}
+        </div>
+        <Separator />
+        <div className="py-2">
+          <AppInfoDialog defaultTab={hasNewVersion ? "changelog" : "status"} onTabChange={(tab) => {
+            if (tab === "changelog") {
+              markAsSeen()
+            }
+          }}>
+            <button
+              type="button"
+              className="relative flex w-full items-center justify-center gap-2 rounded-md py-1.5 text-xs text-muted-foreground transition hover:bg-muted hover:text-foreground"
+            >
+              <Info className="h-3.5 w-3.5" />
+              <span>
+                {currentVersion === "unknown" ? "Ratchet Chat" : `v${currentVersion}`}
+              </span>
+              {hasNewVersion && <WhatsNewBadge className="relative right-auto top-auto" />}
+            </button>
+          </AppInfoDialog>
         </div>
       </ResponsiveModalContent>
     </ResponsiveModal>
