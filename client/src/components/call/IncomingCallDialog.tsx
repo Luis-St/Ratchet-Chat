@@ -3,12 +3,12 @@
 import { Phone, PhoneOff, Video } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog"
+  ResponsiveModal,
+  ResponsiveModalContent,
+  ResponsiveModalDescription,
+  ResponsiveModalHeader,
+  ResponsiveModalTitle,
+} from "@/components/ui/responsive-modal"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { resumeAudioContext } from "./AudioLevelIndicator"
 import type { CallType } from "@/context/CallContext"
@@ -41,7 +41,7 @@ export function IncomingCallDialog({
   }
 
   return (
-    <Dialog
+    <ResponsiveModal
       open={open}
       onOpenChange={(nextOpen) => {
         if (!nextOpen && onSilence) {
@@ -49,21 +49,21 @@ export function IncomingCallDialog({
         }
       }}
     >
-      <DialogContent
+      <ResponsiveModalContent
         className="sm:max-w-sm !z-[10000]"
-        overlayClassName="!z-[9999]"
+        // Drawer doesn't support overlayClassName directly in the same way, but it's handled by ResponsiveModal
         onPointerDownOutside={(e) => e.preventDefault()}
         onEscapeKeyDown={(e) => e.preventDefault()}
       >
-        <DialogHeader className="items-center text-center">
+        <ResponsiveModalHeader className="items-center text-center">
           <Avatar className="size-20 mb-4">
             <AvatarFallback className="text-2xl">{initials}</AvatarFallback>
           </Avatar>
-          <DialogTitle className="text-xl">{username}</DialogTitle>
-          <DialogDescription className="text-base">
+          <ResponsiveModalTitle className="text-xl">{username}</ResponsiveModalTitle>
+          <ResponsiveModalDescription className="text-base">
             Incoming {isVideo ? "video" : "voice"} call
-          </DialogDescription>
-        </DialogHeader>
+          </ResponsiveModalDescription>
+        </ResponsiveModalHeader>
 
         <div className="flex justify-center gap-6 mt-6">
           <Button
@@ -86,7 +86,7 @@ export function IncomingCallDialog({
             {isVideo ? <Video className="size-6" /> : <Phone className="size-6" />}
           </Button>
         </div>
-      </DialogContent>
-    </Dialog>
+      </ResponsiveModalContent>
+    </ResponsiveModal>
   )
 }

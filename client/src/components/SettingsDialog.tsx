@@ -1,19 +1,19 @@
 "use client"
 
 import * as React from "react"
-import { Ban, Camera, ChevronLeft, ChevronRight, Copy, Eye, EyeOff, Fingerprint, Key, Lock, LogOut, Monitor, Plus, Server, Shield, Trash2, User, X } from "lucide-react"
+import { Ban, Bell, Camera, Check, ChevronLeft, ChevronRight, Copy, Eye, EyeOff, Fingerprint, Info, Key, Lock, LogOut, Monitor, Palette, Plus, Server, Shield, Trash2, User, X } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { apiFetch } from "@/lib/api"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog"
+  ResponsiveModal,
+  ResponsiveModalContent,
+  ResponsiveModalDescription,
+  ResponsiveModalHeader,
+  ResponsiveModalTitle,
+} from "@/components/ui/responsive-modal"
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -29,12 +29,23 @@ import { useBlock } from "@/context/BlockContext"
 import { useCall } from "@/context/CallContext"
 import { useSync } from "@/context/SyncContext"
 import { useSettings } from "@/hooks/useSettings"
-import type { PrivacyScope, MessageAcceptance } from "@/context/SettingsContext"
+import {
+  getSessionNotificationsEnabled,
+  setSessionNotificationsEnabled,
+  subscribeToPush,
+  unsubscribeFromPush,
+  isPushSubscribed,
+} from "@/lib/push"
+import type { PrivacyScope, MessageAcceptance, ChatBackground, CustomizationSettings } from "@/context/SettingsContext"
+import { THEME_PRESETS, DEFAULT_CUSTOMIZATION, getThemePreset } from "@/context/SettingsContext"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Separator } from "@/components/ui/separator"
+import { AppInfoDialog } from "@/components/AppInfoDialog"
+import { WhatsNewBadge } from "@/components/WhatsNewBadge"
+import { useWhatsNew } from "@/hooks/useWhatsNew"
 
 function parseDeviceInfo(userAgent: string | null): string {
   if (!userAgent) return "Unknown device"
@@ -226,7 +237,7 @@ async function compressAvatarImage(
   throw new Error("Unable to compress image below size limit")
 }
 
-type SettingsPage = "personalization" | "privacy" | "access" | "security" | "blocking"
+type SettingsPage = "personalization" | "customization" | "privacy" | "notifications" | "access" | "security" | "blocking"
 
 export function SettingsDialog({
   open,
@@ -240,6 +251,7 @@ export function SettingsDialog({
   const { callState } = useCall()
   const { settings, updateSettings } = useSettings()
   const { subscribe } = useSync()
+  const { hasNewVersion, markAsSeen, currentVersion } = useWhatsNew()
   const isInActiveCall = callState.status !== "idle" && callState.status !== "ended"
   const avatarUrl = settings.avatarFilename
     ? `${process.env.NEXT_PUBLIC_API_URL}/uploads/avatars/${settings.avatarFilename}`
@@ -277,6 +289,14 @@ export function SettingsDialog({
   const [newBlockedUser, setNewBlockedUser] = React.useState("")
   const [newBlockedServer, setNewBlockedServer] = React.useState("")
   const [blockError, setBlockError] = React.useState<string | null>(null)
+
+  // Session notifications state (device-specific)
+  const [sessionNotifications, setSessionNotifications] = React.useState(true)
+  const [loadingSessionNotifications, setLoadingSessionNotifications] = React.useState(true)
+
+  // Push subscription state
+  const [pushSubscribed, setPushSubscribed] = React.useState(false)
+  const [pushSubscribing, setPushSubscribing] = React.useState(false)
 
   const identityKey = publicIdentityKey ?? ""
   const identityKeyPreview = formatKeyPreview(identityKey)
@@ -413,6 +433,48 @@ export function SettingsDialog({
     }
   }, [open])
 
+  // Load session notifications setting when dialog opens
+  React.useEffect(() => {
+    if (open) {
+      setLoadingSessionNotifications(true)
+      getSessionNotificationsEnabled()
+        .then(setSessionNotifications)
+        .finally(() => setLoadingSessionNotifications(false))
+
+      // Check push subscription status
+      isPushSubscribed().then(setPushSubscribed)
+    }
+  }, [open])
+
+  const handleSessionNotificationsChange = React.useCallback((checked: boolean) => {
+    setSessionNotifications(checked)
+    void setSessionNotificationsEnabled(checked)
+  }, [])
+
+  const handlePushToggle = React.useCallback(async (checked: boolean) => {
+    setPushSubscribing(true)
+    try {
+      if (checked) {
+        // Subscribe to push notifications
+        const success = await subscribeToPush()
+        if (success) {
+          setPushSubscribed(true)
+          updateSettings({ pushNotificationsEnabled: true })
+        } else {
+          // Permission denied or subscription failed
+          updateSettings({ pushNotificationsEnabled: false })
+        }
+      } else {
+        // Unsubscribe from push notifications
+        await unsubscribeFromPush()
+        setPushSubscribed(false)
+        updateSettings({ pushNotificationsEnabled: false })
+      }
+    } finally {
+      setPushSubscribing(false)
+    }
+  }, [updateSettings])
+
   const handleBlockUser = React.useCallback(async () => {
     const handle = newBlockedUser.trim().toLowerCase()
     if (!handle) {
@@ -533,14 +595,26 @@ export function SettingsDialog({
     {
       id: "personalization",
       title: "Personalization",
-      description: "Profile picture and appearance.",
+      description: "Profile picture and display name.",
       icon: User,
+    },
+    {
+      id: "customization",
+      title: "Customization",
+      description: "Colors, themes, and chat appearance.",
+      icon: Palette,
     },
     {
       id: "privacy",
       title: "Privacy",
       description: "Control what others can see.",
       icon: Eye,
+    },
+    {
+      id: "notifications",
+      title: "Notifications",
+      description: "Push notification preferences.",
+      icon: Bell,
     },
     {
       id: "access",
@@ -721,6 +795,203 @@ export function SettingsDialog({
         </div>
       </div>
     ),
+    customization: (() => {
+      const currentThemeId = settings.customization?.themeId ?? DEFAULT_CUSTOMIZATION.themeId
+      const currentPreset = getThemePreset(currentThemeId)
+      const isDark = typeof document !== "undefined" && document.documentElement.classList.contains("dark")
+      const colors = isDark ? currentPreset.dark : currentPreset.light
+
+      return (
+        <div className="space-y-6 py-4">
+          {/* Theme Presets */}
+          <div className="space-y-3">
+            <div className="space-y-1">
+              <h3 className="text-sm font-medium">Theme</h3>
+              <p className="text-xs text-muted-foreground">
+                Choose a color theme for your chat.
+              </p>
+            </div>
+            <div className="grid grid-cols-3 sm:grid-cols-4 gap-3">
+              {THEME_PRESETS.map((preset) => {
+                const presetColors = isDark ? preset.dark : preset.light
+                const isSelected = currentThemeId === preset.id
+                return (
+                  <button
+                    key={preset.id}
+                    className={cn(
+                      "relative rounded-xl border-2 p-2 transition-all hover:scale-[1.02]",
+                      isSelected
+                        ? "border-foreground shadow-md"
+                        : "border-muted hover:border-muted-foreground/50"
+                    )}
+                    onClick={() => {
+                      const newCustomization = {
+                        ...(settings.customization ?? DEFAULT_CUSTOMIZATION),
+                        themeId: preset.id,
+                      }
+                      void updateSettings({ customization: newCustomization })
+                    }}
+                  >
+                    {/* Mini preview */}
+                    <div className="space-y-1.5 rounded-lg bg-background p-2">
+                      <div
+                        className="h-4 w-3/4 rounded-lg rounded-bl-sm text-[6px] flex items-center px-1"
+                        style={{
+                          backgroundColor: presetColors.incomingBubble,
+                          color: presetColors.incomingText,
+                        }}
+                      >
+                        Hi!
+                      </div>
+                      <div
+                        className="h-4 w-3/4 ml-auto rounded-lg rounded-br-sm text-[6px] flex items-center justify-end px-1"
+                        style={{
+                          backgroundColor: presetColors.outgoingBubble,
+                          color: presetColors.outgoingText,
+                        }}
+                      >
+                        Hey!
+                      </div>
+                    </div>
+                    <p className="mt-1.5 text-[10px] font-medium truncate">{preset.name}</p>
+                    {isSelected && (
+                      <div
+                        className="absolute -top-1.5 -right-1.5 h-5 w-5 rounded-full flex items-center justify-center"
+                        style={{ backgroundColor: preset.accent }}
+                      >
+                        <Check className="h-3 w-3 text-white" />
+                      </div>
+                    )}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+
+          <Separator />
+
+          {/* Live Preview */}
+          <div className="space-y-3">
+            <div className="space-y-1">
+              <Label className="text-sm font-medium">Preview</Label>
+              <p className="text-xs text-muted-foreground">
+                See how your messages will look.
+              </p>
+            </div>
+            <div
+              className={cn(
+                "rounded-lg border p-4 space-y-2",
+                settings.customization?.chatBackground === "dots" && "chat-bg-dots",
+                settings.customization?.chatBackground === "grid" && "chat-bg-grid",
+                settings.customization?.chatBackground === "waves" && "chat-bg-waves"
+              )}
+            >
+              <div className="flex justify-start">
+                <div
+                  className={cn(
+                    "max-w-[75%] rounded-2xl rounded-bl-sm text-xs",
+                    settings.customization?.compactMode ? "px-2 py-1" : "px-3 py-2"
+                  )}
+                  style={{
+                    backgroundColor: colors.incomingBubble,
+                    color: colors.incomingText,
+                  }}
+                >
+                  Hey! How are you?
+                </div>
+              </div>
+              <div className="flex justify-end">
+                <div
+                  className={cn(
+                    "max-w-[75%] rounded-2xl rounded-br-sm text-xs",
+                    settings.customization?.compactMode ? "px-2 py-1" : "px-3 py-2"
+                  )}
+                  style={{
+                    backgroundColor: colors.outgoingBubble,
+                    color: colors.outgoingText,
+                  }}
+                >
+                  I&apos;m doing great! 🎉
+                </div>
+              </div>
+              <div className="flex justify-start">
+                <div
+                  className={cn(
+                    "max-w-[75%] rounded-2xl rounded-bl-sm text-xs",
+                    settings.customization?.compactMode ? "px-2 py-1" : "px-3 py-2"
+                  )}
+                  style={{
+                    backgroundColor: colors.incomingBubble,
+                    color: colors.incomingText,
+                  }}
+                >
+                  That&apos;s awesome!
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <Separator />
+
+          {/* Chat Background */}
+          <div className="space-y-3">
+            <div className="space-y-1">
+              <Label className="text-sm font-medium">Chat Background</Label>
+              <p className="text-xs text-muted-foreground">
+                Pattern for the chat area.
+              </p>
+            </div>
+            <div className="grid grid-cols-4 gap-2">
+              {(["none", "dots", "grid", "waves"] as ChatBackground[]).map((bg) => (
+                <button
+                  key={bg}
+                  className={cn(
+                    "h-14 rounded-lg border-2 transition-all flex items-center justify-center text-xs capitalize",
+                    settings.customization?.chatBackground === bg
+                      ? "border-foreground"
+                      : "border-muted hover:border-muted-foreground/50",
+                    bg === "dots" && "chat-bg-dots",
+                    bg === "grid" && "chat-bg-grid",
+                    bg === "waves" && "chat-bg-waves"
+                  )}
+                  onClick={() => {
+                    const newCustomization = {
+                      ...(settings.customization ?? DEFAULT_CUSTOMIZATION),
+                      chatBackground: bg,
+                    }
+                    void updateSettings({ customization: newCustomization })
+                  }}
+                >
+                  {bg}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <Separator />
+
+          {/* Compact Mode */}
+          <div className="flex items-center justify-between space-x-2">
+            <div className="space-y-1">
+              <Label className="text-sm font-medium">Compact Mode</Label>
+              <p className="text-xs text-muted-foreground">
+                Denser message spacing.
+              </p>
+            </div>
+            <Switch
+              checked={settings.customization?.compactMode ?? false}
+              onCheckedChange={(checked) => {
+                const newCustomization = {
+                  ...(settings.customization ?? DEFAULT_CUSTOMIZATION),
+                  compactMode: checked,
+                }
+                void updateSettings({ customization: newCustomization })
+              }}
+            />
+          </div>
+        </div>
+      )
+    })(),
     privacy: (
       <div className="space-y-6 py-4">
         {/* Message Acceptance */}
@@ -1137,6 +1408,125 @@ export function SettingsDialog({
         </div>
       </div>
     ),
+    notifications: (
+      <div className="space-y-6 py-4">
+        <div className="space-y-4">
+          <div className="space-y-1">
+            <h3 className="text-sm font-medium">Push Notifications</h3>
+            <p className="text-xs text-muted-foreground">
+              Get notified when you receive new messages, even when the app is closed.
+            </p>
+          </div>
+
+          <div className="flex items-center justify-between">
+            <div className="space-y-0.5">
+              <Label htmlFor="push-enabled" className="text-sm">
+                Enable push notifications
+              </Label>
+              <p className="text-xs text-muted-foreground">
+                {pushSubscribing
+                  ? "Updating subscription..."
+                  : pushSubscribed
+                    ? "Subscribed to push notifications"
+                    : "Not subscribed - enable to subscribe"}
+              </p>
+            </div>
+            <Switch
+              id="push-enabled"
+              checked={settings.pushNotificationsEnabled}
+              disabled={pushSubscribing}
+              onCheckedChange={handlePushToggle}
+            />
+          </div>
+
+          <Separator />
+
+          <div className="space-y-4">
+            <div className="space-y-1">
+              <h4 className="text-sm font-medium">Notification Content</h4>
+              <p className="text-xs text-muted-foreground">
+                Control what information is shown in notifications.
+              </p>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <div className="space-y-0.5">
+                <Label htmlFor="push-sender" className="text-sm">
+                  Show sender name
+                </Label>
+                <p className="text-xs text-muted-foreground">
+                  Display who sent the message
+                </p>
+              </div>
+              <Switch
+                id="push-sender"
+                checked={settings.pushShowSenderName}
+                onCheckedChange={(checked) =>
+                  updateSettings({ pushShowSenderName: checked })
+                }
+                disabled={!settings.pushNotificationsEnabled}
+              />
+            </div>
+
+            <div className="flex items-center justify-between">
+              <div className="space-y-0.5">
+                <Label htmlFor="push-content" className="text-sm">
+                  Show message preview
+                </Label>
+                <p className="text-xs text-muted-foreground">
+                  Display a preview of the message content
+                </p>
+              </div>
+              <Switch
+                id="push-content"
+                checked={settings.pushShowContent}
+                onCheckedChange={(checked) =>
+                  updateSettings({ pushShowContent: checked })
+                }
+                disabled={!settings.pushNotificationsEnabled}
+              />
+            </div>
+
+            <div className="rounded-md border border-muted-foreground/20 bg-muted/40 p-2 text-[10px] text-muted-foreground">
+              Note: Message previews require your password to be saved (auto-unlock enabled).
+              Without a saved password, only sender names can be shown.
+            </div>
+          </div>
+
+          <Separator />
+
+          <div className="space-y-4">
+            <div className="space-y-1">
+              <h4 className="text-sm font-medium">Device Settings</h4>
+              <p className="text-xs text-muted-foreground">
+                Settings that only apply to this device.
+              </p>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <div className="space-y-0.5">
+                <Label htmlFor="session-notifications" className="text-sm">
+                  Notifications on this device
+                </Label>
+                <p className="text-xs text-muted-foreground">
+                  Disable to silence notifications on this device only
+                </p>
+              </div>
+              <Switch
+                id="session-notifications"
+                checked={sessionNotifications}
+                disabled={loadingSessionNotifications || !settings.pushNotificationsEnabled}
+                onCheckedChange={handleSessionNotificationsChange}
+              />
+            </div>
+
+            <div className="rounded-md border border-muted-foreground/20 bg-muted/40 p-2 text-[10px] text-muted-foreground">
+              This setting stays on this device and is not synced to other devices or the server.
+            </div>
+          </div>
+        </div>
+      </div>
+    ),
     blocking: (
       <div className="space-y-6 py-4">
         <div className="space-y-3">
@@ -1259,10 +1649,13 @@ export function SettingsDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[640px] max-h-[85vh] grid-rows-[auto_auto_1fr] overflow-hidden">
-        <DialogHeader className="space-y-3">
-          <DialogTitle className="sr-only">Settings</DialogTitle>
+    <ResponsiveModal open={open} onOpenChange={onOpenChange}>
+      <ResponsiveModalContent
+        className="sm:max-w-[640px] max-h-[85vh] grid-rows-[auto_auto_1fr] overflow-hidden"
+        onOpenAutoFocus={(e) => e.preventDefault()}
+      >
+        <ResponsiveModalHeader className="space-y-3">
+          <ResponsiveModalTitle className="sr-only">Settings</ResponsiveModalTitle>
           <Breadcrumb>
             <BreadcrumbList className="text-base sm:text-xl font-medium">
               <BreadcrumbItem>
@@ -1290,8 +1683,8 @@ export function SettingsDialog({
               ) : null}
             </BreadcrumbList>
           </Breadcrumb>
-          <DialogDescription>{dialogDescription}</DialogDescription>
-        </DialogHeader>
+          <ResponsiveModalDescription>{dialogDescription}</ResponsiveModalDescription>
+        </ResponsiveModalHeader>
         <Separator />
         <div className="min-h-0">
           {activePage ? (
@@ -1339,7 +1732,26 @@ export function SettingsDialog({
             </ScrollArea>
           )}
         </div>
-      </DialogContent>
-    </Dialog>
+        <Separator />
+        <div className="py-2">
+          <AppInfoDialog defaultTab={hasNewVersion ? "changelog" : "status"} onTabChange={(tab) => {
+            if (tab === "changelog") {
+              markAsSeen()
+            }
+          }}>
+            <button
+              type="button"
+              className="relative flex w-full items-center justify-center gap-2 rounded-md py-1.5 text-xs text-muted-foreground transition hover:bg-muted hover:text-foreground"
+            >
+              <Info className="h-3.5 w-3.5" />
+              <span>
+                {currentVersion === "unknown" ? "Ratchet Chat" : `v${currentVersion}`}
+              </span>
+              {hasNewVersion && <WhatsNewBadge className="relative right-auto top-auto" />}
+            </button>
+          </AppInfoDialog>
+        </div>
+      </ResponsiveModalContent>
+    </ResponsiveModal>
   )
 }

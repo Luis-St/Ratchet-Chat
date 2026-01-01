@@ -53,9 +53,37 @@ export function NavUser({
 }) {
   const { isMobile } = useSidebar()
   const { setTheme, theme } = useTheme()
-  const { settings } = useSettings()
+  const { settings, updateSettings } = useSettings()
   const [showSettings, setShowSettings] = React.useState(false)
   const [showContacts, setShowContacts] = React.useState(false)
+  const lastDarkClickRef = React.useRef<number>(0)
+  const [dropdownOpen, setDropdownOpen] = React.useState(false)
+
+  const handleDarkSelect = React.useCallback((e: Event) => {
+    const now = Date.now()
+    const timeSinceLastClick = now - lastDarkClickRef.current
+
+    if (timeSinceLastClick < 400 && theme === "dark") {
+      // Double click detected while already in dark mode - toggle OLED
+      const currentOled = settings.customization?.oledMode ?? false
+      void updateSettings({
+        customization: {
+          ...(settings.customization ?? { themeId: "default", chatBackground: "grid", compactMode: false, oledMode: false }),
+          oledMode: !currentOled,
+        },
+      })
+      // Close after toggling OLED
+      setDropdownOpen(false)
+    } else if (theme === "dark") {
+      // Already in dark mode, keep open for potential double-click
+      e.preventDefault()
+      lastDarkClickRef.current = now
+    } else {
+      // Not in dark mode - just set dark theme and close
+      setTheme("dark")
+    }
+    lastDarkClickRef.current = now
+  }, [theme, settings.customization, updateSettings, setTheme])
 
   const avatarUrl = settings.avatarFilename 
     ? `${process.env.NEXT_PUBLIC_API_URL}/uploads/avatars/${settings.avatarFilename}`
@@ -67,7 +95,7 @@ export function NavUser({
       <ContactsDialog open={showContacts} onOpenChange={setShowContacts} />
       <SidebarMenu>
         <SidebarMenuItem>
-          <DropdownMenu>
+          <DropdownMenu open={dropdownOpen} onOpenChange={setDropdownOpen}>
             <DropdownMenuTrigger asChild>
               <SidebarMenuButton
                 size="lg"
@@ -127,9 +155,9 @@ export function NavUser({
                   Light
                   {theme === "light" && <Check className="ml-auto h-4 w-4" />}
                 </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => setTheme("dark")}>
+                <DropdownMenuItem onSelect={handleDarkSelect}>
                   <Moon className="mr-2 h-4 w-4" />
-                  Dark
+                  Dark{settings.customization?.oledMode && theme === "dark" ? " (OLED)" : ""}
                   {theme === "dark" && <Check className="ml-auto h-4 w-4" />}
                 </DropdownMenuItem>
                 <DropdownMenuItem onClick={() => setTheme("system")}>

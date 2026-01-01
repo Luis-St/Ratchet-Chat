@@ -18,6 +18,10 @@ import { verifyFederationSignature } from "../middleware/federation";
 import { buildHandle, getInstanceHost, parseHandle } from "../lib/handles";
 import { serverLogger, sanitizeLogPayload } from "../lib/logger";
 import { createRateLimiter } from "../middleware/rateLimit";
+import {
+  sendPushToUserWithPreview,
+  isPushConfigured,
+} from "../lib/webpush";
 
 const sendSchema = z.object({
   recipient_handle: z.string().min(1),
@@ -25,6 +29,7 @@ const sendSchema = z.object({
   message_id: z.string().uuid(),
   event_id: z.string().uuid().optional(), // For modification events - their own unique ID (server treats as opaque)
   // Note: event_type and reaction_emoji removed for privacy - server should not know what actions users perform
+  encrypted_push_preview: z.string().optional(), // Client-encrypted push preview (E2EE)
   sender_vault_blob: z.string().min(1).optional(),
   sender_vault_iv: z.string().min(1).optional(),
   sender_vault_signature_verified: z.boolean().optional(),
@@ -34,6 +39,7 @@ const incomingSchema = z.object({
   recipient_handle: z.string().min(1),
   sender_handle: z.string().min(1),
   encrypted_blob: z.string().min(1),
+  encrypted_push_preview: z.string().optional(), // E2EE push preview for notifications
 });
 
 const vaultSchema = z.object({
@@ -65,6 +71,87 @@ export const createMessagesRouter = (
   const instanceHost = getInstanceHost();
   const serverHost = getServerHost();
   const federationIncomingPath = "/api/federation/incoming";
+
+  // Helper function to send push notifications for incoming messages
+  // Security: senderHandle must be server-validated (derived from authenticated session
+  // for local users, or verified via federation signature for remote users).
+  // The encryptedPushPreview is E2EE content created by the sender - server cannot
+  // verify its contents, but the unencrypted senderHandle in the push envelope
+  // is what gets displayed as fallback if decryption fails.
+  const sendPushNotificationForMessage = async (
+    recipientId: string,
+    senderHandle: string,
+    messageId?: string,
+    encryptedPushPreview?: string
+  ) => {
+    if (!isPushConfigured()) {
+      serverLogger.debug("push.skipped", { reason: "not_configured" });
+      return;
+    }
+    if (!encryptedPushPreview) {
+      serverLogger.debug("push.skipped", { reason: "no_preview", recipientId, senderHandle });
+      return;
+    }
+    serverLogger.info("push.attempting", { recipientId, senderHandle, previewLength: encryptedPushPreview.length });
+
+    try {
+      // Get recipient's push subscriptions
+      const recipient = await prisma.user.findUnique({
+        where: { id: recipientId },
+        select: {
+          sessions: {
+            where: { expires_at: { gt: new Date() } },
+            include: {
+              push_subscriptions: true,
+            },
+          },
+        },
+      });
+
+      if (!recipient) return;
+
+      // Collect all push subscriptions across sessions
+      const allSubscriptions = recipient.sessions.flatMap((session) =>
+        session.push_subscriptions.map((sub) => ({
+          id: sub.id,
+          endpoint: sub.endpoint,
+          p256dh_key: sub.p256dh_key,
+          auth_key: sub.auth_key,
+        }))
+      );
+
+      if (allSubscriptions.length === 0) return;
+
+      // Use client-encrypted preview (E2EE - server never sees content)
+      const result = await sendPushToUserWithPreview(
+        allSubscriptions,
+        encryptedPushPreview,
+        senderHandle
+      );
+
+      // Clean up expired subscriptions
+      if (result.expired.length > 0) {
+        await prisma.pushSubscription.deleteMany({
+          where: { id: { in: result.expired } },
+        });
+        serverLogger.info("push.expired_subscriptions_cleaned", {
+          count: result.expired.length,
+        });
+      }
+
+      if (result.sent > 0) {
+        serverLogger.info("push.notification_sent", {
+          recipient_id: recipientId,
+          sent_count: result.sent,
+        });
+      }
+    } catch (error) {
+      serverLogger.error("push.notification_failed", {
+        error: sanitizeLogPayload(error),
+        recipient_id: recipientId,
+      });
+    }
+  };
   const federationLimiter = createRateLimiter({
     windowMs: Number(process.env.FEDERATION_RATE_LIMIT_WINDOW_MS ?? 60000),
     max: Number(process.env.FEDERATION_RATE_LIMIT_MAX ?? 120),
@@ -95,7 +182,7 @@ export const createMessagesRouter = (
       return res.status(400).json({ error: "Invalid request" });
     }
 
-    const { recipient_handle, sender_handle, encrypted_blob } = parsed.data;
+    const { recipient_handle, sender_handle, encrypted_blob, encrypted_push_preview } = parsed.data;
     serverLogger.info("federation.incoming.received", {
       sender_host: req.headers["x-ratchet-host"],
       payload: sanitizeLogPayload({
@@ -153,6 +240,15 @@ export const createMessagesRouter = (
       created_at: created.created_at.toISOString(),
     });
 
+    // Send push notification (fire and forget)
+    // The encrypted_push_preview is created by the sending client and forwarded through federation
+    void sendPushNotificationForMessage(
+      recipient.id,
+      created.sender_handle ?? senderParsed.handle,
+      created.id,
+      encrypted_push_preview
+    );
+
     return res.status(201).json({
       id: created.id,
       recipient_handle: recipientParsed.handle,
@@ -190,6 +286,7 @@ export const createMessagesRouter = (
       encrypted_blob,
       message_id,
       event_id,
+      encrypted_push_preview,
       sender_vault_blob,
       sender_vault_iv,
       sender_vault_signature_verified,
@@ -206,6 +303,8 @@ export const createMessagesRouter = (
       return res.status(400).json({ error: "Invalid recipient handle" });
     }
 
+    // Security: Derive sender handle from authenticated session, not from client input.
+    // This ensures push notifications show the verified sender identity.
     const senderHandle = buildHandle(req.user.username, instanceHost);
 
     serverLogger.info("message.send.request", {
@@ -248,6 +347,8 @@ export const createMessagesRouter = (
         recipient_handle: recipientParsed.handle,
         sender_handle: senderHandle,
         encrypted_blob,
+        // Forward the E2EE push preview to the remote server for notifications
+        ...(encrypted_push_preview ? { encrypted_push_preview } : {}),
       };
       const payloadJson = JSON.stringify(payload);
       const signature = signFederationPayload(payloadJson);
@@ -380,6 +481,14 @@ export const createMessagesRouter = (
       encrypted_blob: queueItem.created.encrypted_blob,
       created_at: queueItem.created.created_at.toISOString(),
     });
+
+    // Send push notification (fire and forget)
+    void sendPushNotificationForMessage(
+      recipient.id,
+      queueItem.created.sender_handle ?? senderHandle,
+      queueItem.created.id,
+      encrypted_push_preview
+    );
 
     // Notify other devices of the sender about the outgoing message
     if (queueItem.senderVaultStored && sender_vault_blob && sender_vault_iv) {

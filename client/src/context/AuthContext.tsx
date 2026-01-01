@@ -26,6 +26,16 @@ import { getInstanceHost, normalizeHandle, splitHandle } from "@/lib/handles"
 import { decodeContactRecord } from "@/lib/messageUtils"
 import { isInCall } from "@/lib/callState"
 import {
+  registerServiceWorker,
+  unregisterServiceWorker,
+  subscribeToPush,
+  unsubscribeFromPush,
+  storeTransportKeyForSW,
+  clearTransportKeyForSW,
+  setupPushDecryptionHandler,
+  setupNotificationClickHandler,
+} from "@/lib/push"
+import {
   loginFinish,
   loginStart,
   registerFinish,
@@ -247,26 +257,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     React.useState<string | null>(null)
 
   const clearSession = React.useCallback(async (callLogoutApi = true) => {
-    if (callLogoutApi && token) {
-      try {
-        await apiFetch("/auth/sessions/current", { method: "DELETE" })
-      } catch {
-        try {
-          await apiFetch("/auth/logout", { method: "POST" })
-        } catch {
-          // Best-effort logout
-        }
-      }
-    }
-
+    // Clear state FIRST so UI updates immediately
     setStatus("guest")
     setUser(null)
-    setToken(null)
     setMasterKey(null)
     setIdentityPrivateKey(null)
     setPublicIdentityKey(null)
     setTransportPrivateKey(null)
     setPublicTransportKey(null)
+
+    const currentToken = token
+    setToken(null)
     setAuthToken(null)
 
     if (typeof window !== "undefined") {
@@ -274,15 +275,45 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       window.sessionStorage.clear()
     }
 
-    // Clear master key from IndexedDB before full delete
-    try {
-      await db.syncState.delete("masterKey")
-      await db.syncState.delete(LAST_SELECTED_CHAT_KEY)
-    } catch {
-      // Best-effort
-    }
+    // Best-effort cleanup (don't block on these)
+    void (async () => {
+      // Unsubscribe from push BEFORE invalidating the token
+      if (callLogoutApi && currentToken) {
+        try {
+          await unsubscribeFromPush()
+        } catch {
+          // Best-effort
+        }
 
-    void db.delete().then(() => db.open()).catch(() => {})
+        try {
+          await apiFetch("/auth/sessions/current", { method: "DELETE" })
+        } catch {
+          try {
+            await apiFetch("/auth/logout", { method: "POST" })
+          } catch {
+            // Best-effort logout
+          }
+        }
+      }
+
+      // Clear master key from IndexedDB before full delete
+      try {
+        await db.syncState.delete("masterKey")
+        await db.syncState.delete(LAST_SELECTED_CHAT_KEY)
+      } catch {
+        // Best-effort
+      }
+
+      // Clear local push data and unregister service worker
+      try {
+        await clearTransportKeyForSW()
+        await unregisterServiceWorker()
+      } catch {
+        // Best-effort
+      }
+
+      void db.delete().then(() => db.open()).catch(() => {})
+    })()
   }, [token])
 
   React.useEffect(() => {
@@ -339,6 +370,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setStatus("locked")
           return
         }
+
+        // Ensure transport key is stored for service worker (in case it was missing)
+        await storeTransportKeyForSW(transportPrivateKey)
 
         setMasterKey(masterKey)
         setIdentityPrivateKey(identityPrivateKey)
@@ -576,6 +610,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           key: "masterKey",
           value: await exportMasterKey(masterKey),
         })
+        // Store transport key for service worker push decryption
+        await storeTransportKeyForSW(transportPair.privateKey)
       }
 
       setStatus("authenticated")
@@ -707,6 +743,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           value: await exportMasterKey(masterKey),
         })
         await updateActiveSession({ savePassword: true })
+        // Store transport key for service worker push decryption
+        await storeTransportKeyForSW(transportPrivateKey)
+      } else {
+        // Clear transport key if not saving password (SW can't decrypt)
+        await clearTransportKeyForSW()
       }
 
       setMasterKey(masterKey)
@@ -897,6 +938,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         })
         setTransportPrivateKey(nextTransportKey)
         setPublicTransportKey(payload.public_transport_key)
+
+        // Update transport key in IndexedDB for service worker if password is saved
+        const session = await loadActiveSession()
+        if (session?.savePassword) {
+          await storeTransportKeyForSW(nextTransportKey)
+          console.log("[Auth] Updated transport key for service worker")
+        }
+
         const rotatedAt = (() => {
           if (typeof payload.rotated_at === "number" && Number.isFinite(payload.rotated_at)) {
             return payload.rotated_at
@@ -979,6 +1028,58 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const logout = React.useCallback(() => {
     void clearSession(true)
   }, [clearSession])
+
+  // Initialize push notifications when authenticated
+  React.useEffect(() => {
+    if (status !== "authenticated" || !transportPrivateKey) {
+      // Clear transport key when entering locked state
+      if (status === "locked") {
+        void clearTransportKeyForSW()
+      }
+      return
+    }
+
+    let cancelled = false
+
+    // Register service worker and subscribe to push
+    void (async () => {
+      try {
+        await registerServiceWorker()
+        if (cancelled) return
+
+        // Auto-subscribe to push if not already subscribed
+        // User can disable in settings later
+        await subscribeToPush()
+        if (cancelled) return
+
+        // Store transport key for SW while authenticated
+        // This allows SW to decrypt notifications while app is open
+        // Key is cleared on logout/lock via clearTransportKeyForSW
+        await storeTransportKeyForSW(transportPrivateKey)
+      } catch (error) {
+        console.error("[Auth] Push notification setup failed:", error)
+      }
+    })()
+
+    // Set up push decryption handler for when SW forwards encrypted notifications
+    const cleanupDecryption = setupPushDecryptionHandler(transportPrivateKey)
+
+    // Set up notification click handler for navigation
+    const cleanupClick = setupNotificationClickHandler((path) => {
+      // Navigate to the path when notification is clicked
+      if (typeof window !== "undefined") {
+        window.location.href = path
+      }
+    })
+
+    return () => {
+      cancelled = true
+      cleanupDecryption()
+      cleanupClick()
+      // Note: Don't unregister SW or clear transport key here
+      // Only do that on full logout via clearSession()
+    }
+  }, [status, transportPrivateKey])
 
   const value = React.useMemo<AuthContextValue>(
     () => ({

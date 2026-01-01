@@ -37,8 +37,14 @@
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.708 0 0);
-  --chat-glow: #d1fae5;
-  --chat-grid: rgba(16, 185, 129, 0.12);
+  /* Theme customization - these are set dynamically via JS */
+  --theme-accent: #10b981;
+  --theme-accent-light: #d1fae5;
+  --theme-accent-dark: #064e3b;
+  --bubble-outgoing: #10b981;
+  --bubble-incoming: #e2e8f0;
+  --chat-glow: var(--theme-accent-light);
+  --chat-grid: color-mix(in srgb, var(--theme-accent) 12%, transparent);
 }
 
 .dark {
@@ -74,8 +80,25 @@
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(0.269 0 0);
   --sidebar-ring: oklch(0.439 0 0);
-  --chat-glow: #064e3b;
-  --chat-grid: rgba(16, 185, 129, 0.05);
+  --chat-glow: var(--theme-accent-dark);
+  --chat-grid: color-mix(in srgb, var(--theme-accent) 5%, transparent);
+  --bubble-incoming: #334155;
+}
+
+/* OLED mode - pitch black backgrounds */
+.oled.dark {
+  --background: oklch(0 0 0);
+  --card: oklch(0 0 0);
+  --popover: oklch(0 0 0);
+  --secondary: oklch(0.12 0 0);
+  --muted: oklch(0.12 0 0);
+  --accent: oklch(0.12 0 0);
+  --border: oklch(0.18 0 0);
+  --input: oklch(0.18 0 0);
+  --sidebar: oklch(0 0 0);
+  --sidebar-accent: oklch(0.12 0 0);
+  --sidebar-border: oklch(0.18 0 0);
+  --bubble-incoming: #1a1a1a;
 }
 
 @theme inline {
@@ -133,5 +156,34 @@
   }
   .no-scrollbar::-webkit-scrollbar {
     display: none;
+  }
+
+  /* Chat background patterns */
+  .chat-bg-none {
+    background: transparent;
+  }
+  .chat-bg-dots {
+    background-image: radial-gradient(var(--chat-grid) 2.5px, transparent 2.5px);
+    background-size: 18px 18px;
+  }
+  .chat-bg-grid {
+    background-image:
+      linear-gradient(var(--chat-grid) 1.5px, transparent 1.5px),
+      linear-gradient(90deg, var(--chat-grid) 1.5px, transparent 1.5px);
+    background-size: 20px 20px;
+  }
+  .chat-bg-waves {
+    background-image: url("data:image/svg+xml,%3Csvg width='80' height='16' viewBox='0 0 80 16' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M0 8 Q20 0 40 8 T80 8' fill='none' stroke='%2310b98130' stroke-width='2'/%3E%3C/svg%3E");
+    background-size: 80px 16px;
+  }
+  .dark .chat-bg-waves {
+    background-image: url("data:image/svg+xml,%3Csvg width='80' height='16' viewBox='0 0 80 16' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M0 8 Q20 0 40 8 T80 8' fill='none' stroke='%2310b98118' stroke-width='2'/%3E%3C/svg%3E");
+  }
+
+  /* Remove vaul drawer bottom safe area */
+  [data-vaul-drawer]::after {
+    display: none !important;
+    height: 0 !important;
+    content: none !important;
   }
 }

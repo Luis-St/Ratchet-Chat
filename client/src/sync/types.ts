@@ -95,6 +95,12 @@ export interface PrivacySettingsUpdatedEvent extends BaseSyncEvent {
   iv: string
 }
 
+export interface MutedConversationsUpdatedEvent extends BaseSyncEvent {
+  type: "MUTED_CONVERSATIONS_UPDATED"
+  ciphertext: string
+  iv: string
+}
+
 // ---- Session Events ----
 
 export interface SessionInvalidatedEvent extends BaseSyncEvent {
@@ -136,6 +142,7 @@ export type SyncEvent =
   | TransportKeyRotatedEvent
   | SettingsUpdatedEvent
   | PrivacySettingsUpdatedEvent
+  | MutedConversationsUpdatedEvent
   | SessionInvalidatedEvent
   | SessionDeletedEvent
   | PasskeyAddedEvent
@@ -152,6 +159,7 @@ export type SyncEventMap = {
   TRANSPORT_KEY_ROTATED: TransportKeyRotatedEvent
   SETTINGS_UPDATED: SettingsUpdatedEvent
   PRIVACY_SETTINGS_UPDATED: PrivacySettingsUpdatedEvent
+  MUTED_CONVERSATIONS_UPDATED: MutedConversationsUpdatedEvent
   SESSION_INVALIDATED: SessionInvalidatedEvent
   SESSION_DELETED: SessionDeletedEvent
   PASSKEY_ADDED: PasskeyAddedEvent
@@ -171,6 +179,7 @@ export const SYNC_EVENT_TYPES: SyncEventType[] = [
   "TRANSPORT_KEY_ROTATED",
   "SETTINGS_UPDATED",
   "PRIVACY_SETTINGS_UPDATED",
+  "MUTED_CONVERSATIONS_UPDATED",
   "SESSION_INVALIDATED",
   "SESSION_DELETED",
   "PASSKEY_ADDED",

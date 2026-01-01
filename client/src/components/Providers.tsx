@@ -3,6 +3,7 @@
 import * as React from "react"
 import { AuthProvider, useAuth } from "@/context/AuthContext"
 import { BlockProvider } from "@/context/BlockContext"
+import { MuteProvider } from "@/context/MuteContext"
 import { ContactsProvider } from "@/context/ContactsContext"
 import { SocketProvider } from "@/context/SocketContext"
 import { SyncProvider } from "@/context/SyncContext"
@@ -33,14 +34,18 @@ function ProvidersWithAuth({ children }: { children: React.ReactNode }) {
       {status === "authenticated" ? (
         <SocketProvider token={token}>
           <BlockProvider>
-            <ContactsProvider>
-              <SyncProviderWithSettings>{content}</SyncProviderWithSettings>
-            </ContactsProvider>
+            <MuteProvider>
+              <ContactsProvider>
+                <SyncProviderWithSettings>{content}</SyncProviderWithSettings>
+              </ContactsProvider>
+            </MuteProvider>
           </BlockProvider>
         </SocketProvider>
       ) : (
         <BlockProvider>
-          <ContactsProvider>{content}</ContactsProvider>
+          <MuteProvider>
+            <ContactsProvider>{content}</ContactsProvider>
+          </MuteProvider>
         </BlockProvider>
       )}
     </SettingsProvider>

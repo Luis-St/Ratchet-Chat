@@ -10,6 +10,7 @@ import type {
   TransportKeyRotatedEvent,
   SettingsUpdatedEvent,
   PrivacySettingsUpdatedEvent,
+  MutedConversationsUpdatedEvent,
   SessionInvalidatedEvent,
   SessionDeletedEvent,
   PasskeyAddedEvent,
@@ -157,6 +158,13 @@ function validatePrivacySettingsUpdated(
   return isString(payload.ciphertext) && isString(payload.iv)
 }
 
+function validateMutedConversationsUpdated(
+  payload: unknown
+): payload is Omit<MutedConversationsUpdatedEvent, "type"> {
+  if (!isObject(payload)) return false
+  return isString(payload.ciphertext) && isString(payload.iv)
+}
+
 function validateSessionInvalidated(
   payload: unknown
 ): payload is Omit<SessionInvalidatedEvent, "type"> {
@@ -212,6 +220,7 @@ const validators: Record<
   TRANSPORT_KEY_ROTATED: validateTransportKeyRotated,
   SETTINGS_UPDATED: validateSettingsUpdated,
   PRIVACY_SETTINGS_UPDATED: validatePrivacySettingsUpdated,
+  MUTED_CONVERSATIONS_UPDATED: validateMutedConversationsUpdated,
   SESSION_INVALIDATED: validateSessionInvalidated,
   SESSION_DELETED: validateSessionDeleted,
   PASSKEY_ADDED: validatePasskeyAdded,

@@ -2,6 +2,7 @@
 
 import * as React from "react"
 import { createPortal } from "react-dom"
+import { useSearchParams, useRouter } from "next/navigation"
 import { Ban, Check, ShieldAlert, ShieldCheck, ShieldOff, Trash2, UserPlus } from "lucide-react"
 import { useTheme } from "next-themes"
 
@@ -23,10 +24,12 @@ import {
 import { Button } from "@/components/ui/button"
 import { useAuth } from "@/context/AuthContext"
 import { useBlock } from "@/context/BlockContext"
+import { useMute } from "@/context/MuteContext"
 import { useCall } from "@/context/CallContext"
 import { useContacts } from "@/context/ContactsContext"
 import { useSocket } from "@/context/SocketContext"
 import { useSettings } from "@/hooks/useSettings"
+import { useThemeCustomization } from "@/hooks/useThemeCustomization"
 import { useRatchetSync } from "@/hooks/useRatchetSync"
 import { apiFetch } from "@/lib/api"
 import { getContactDisplayName, normalizeNickname } from "@/lib/contacts"
@@ -46,6 +49,8 @@ import {
   decodeUtf8,
 } from "@/lib/crypto"
 import { normalizeHandle, splitHandle } from "@/lib/handles"
+import { createEncryptedPushPreview } from "@/lib/push"
+import type { MuteDuration } from "@/lib/mute"
 import { db, type MessageRecord } from "@/lib/db"
 import { cn } from "@/lib/utils"
 import { RecipientInfoDialog } from "@/components/RecipientInfoDialog"
@@ -146,6 +151,8 @@ const mergeContactLists = (base: Contact[], incoming: Contact[]) => {
 
 export function DashboardLayout() {
   const LAST_SELECTED_CHAT_KEY = "lastSelectedChat"
+  const searchParams = useSearchParams()
+  const router = useRouter()
   const {
     user,
     masterKey,
@@ -157,8 +164,10 @@ export function DashboardLayout() {
   const { theme } = useTheme()
   const socket = useSocket()
   const { settings } = useSettings()
+  const customization = useThemeCustomization()
   const { initiateCall, callState, handleCallMessage, externalCallActive } = useCall()
   const { isBlocked, blockUser } = useBlock()
+  const { isMuted, muteConversation, unmuteConversation } = useMute()
   const { contacts: syncedContacts, addContact, removeContact } = useContacts()
   const [contacts, setContacts] = React.useState<Contact[]>([])
   const savedContactHandles = React.useMemo(() => {
@@ -184,13 +193,14 @@ export function DashboardLayout() {
   const [sidebarSearchQuery, setSidebarSearchQuery] = React.useState("")
   const [chatSearchQuery, setChatSearchQuery] = React.useState("")
   const [isChatSearchOpen, setIsChatSearchOpen] = React.useState(false)
+  const [currentSearchIndex, setCurrentSearchIndex] = React.useState(0)
   const [scrollToMessageId, setScrollToMessageId] = React.useState<string | null>(null)
   const [highlightedMessageId, setHighlightedMessageId] = React.useState<string | null>(null)
   const [typingStatus, setTypingStatus] = React.useState<Record<string, boolean>>({})
   const [showRecipientInfo, setShowRecipientInfo] = React.useState(false)
   const [showBlockConfirm, setShowBlockConfirm] = React.useState(false)
   const [addToContactsOnAccept, setAddToContactsOnAccept] = React.useState(false)
-  const [attachment, setAttachment] = React.useState<{ name: string; type: string; size: number; data: string } | null>(null)
+  const [attachments, setAttachments] = React.useState<{ name: string; type: string; size: number; data: string }[]>([])
   const [previewImage, setPreviewImage] = React.useState<string | null>(null)
   const [pendingLink, setPendingLink] = React.useState<string | null>(null)
   const [activeActionMessageId, setActiveActionMessageId] = React.useState<string | null>(null)
@@ -326,6 +336,22 @@ export function DashboardLayout() {
       window.removeEventListener(CONTACT_TRANSPORT_KEY_UPDATED_EVENT, handleUpdate)
     }
   }, [contacts, upsertContact])
+
+  // Handle ?chat= query param from notification clicks
+  React.useEffect(() => {
+    const chatHandle = searchParams.get("chat")
+    if (!chatHandle) return
+
+    // Set the active chat from the notification
+    setSuppressStoredSelection(true)
+    setActiveId(chatHandle)
+
+    // Clear the query param from the URL without triggering a navigation
+    const url = new URL(window.location.href)
+    url.searchParams.delete("chat")
+    router.replace(url.pathname + url.search, { scroll: false })
+  }, [searchParams, router])
+
   // TRANSPORT_KEY_ROTATED is now handled by SyncManager in SyncContext
   React.useEffect(() => {
     if (typeof window === "undefined") {
@@ -367,7 +393,7 @@ export function DashboardLayout() {
   const updateMessagePayload = React.useCallback(
     async (
       messageId: string,
-      updates: { deliveredAt?: string; processedAt?: string; readAt?: string }
+      updates: { deliveredAt?: string; processedAt?: string; readAt?: string; isRead?: boolean }
     ) => {
       if (!masterKey) {
         return null
@@ -407,6 +433,9 @@ export function DashboardLayout() {
       }
       if (updates.readAt) {
         nextPayload.read_at = updates.readAt
+      }
+      if (updates.isRead !== undefined) {
+        nextPayload.is_read = updates.isRead
       }
       const encrypted = await encryptString(masterKey, JSON.stringify(nextPayload))
       const contentJson = JSON.stringify({
@@ -610,16 +639,24 @@ export function DashboardLayout() {
   const isMessageRequestChat = activeContact
     ? messageRequestHandles.has(activeContact.handle)
     : false
+  const isActiveContactMuted = activeContact
+    ? isMuted(activeContact.handle)
+    : false
   const activeMessagesRaw = activeContact
     ? messagesByPeer.get(activeContact.handle) ?? []
     : []
 
-  const activeMessages = React.useMemo(() => {
-    if (!chatSearchQuery.trim()) {
-      return activeMessagesRaw
-    }
+  // Show all messages during search (don't filter, just highlight matches)
+  const activeMessages = activeMessagesRaw
+
+  // Track which messages match the search query (newest first for "1/N" to mean most recent)
+  const searchMatchIds = React.useMemo(() => {
+    if (!chatSearchQuery.trim()) return []
     const lower = chatSearchQuery.toLowerCase()
-    return activeMessagesRaw.filter((msg) => msg.text.toLowerCase().includes(lower))
+    return activeMessagesRaw
+      .filter((msg) => msg.text?.toLowerCase().includes(lower))
+      .map((msg) => msg.id)
+      .reverse()
   }, [activeMessagesRaw, chatSearchQuery])
 
   const activeMessageItems = React.useMemo(() => {
@@ -720,6 +757,7 @@ export function DashboardLayout() {
           lastTimestamp: formatTimestamp(lastTimestampRaw),
           lastTimestampRaw,
           unread,
+          isMuted: isMuted(contact.handle),
         }
       })
 
@@ -765,6 +803,7 @@ export function DashboardLayout() {
         lastMessage: truncate(rawText),
         lastTimestamp: formatTimestamp(lastMessage?.timestamp ?? ""),
         unread,
+        isMuted: isMuted(contact.handle),
       })
     }
 
@@ -786,13 +825,14 @@ export function DashboardLayout() {
           lastMessage: truncate(msg.text),
           lastTimestamp: formatTimestamp(msg.timestamp),
           unread: 0, // Search results typically don't show unread counts for the message itself
-          foundMessageId: msg.id
+          foundMessageId: msg.id,
+          isMuted: isMuted(contact.handle),
         })
       }
     }
 
     return results
-  }, [contacts, messagesByPeer, activeId, sidebarSearchQuery, summaries, isBlocked])
+  }, [contacts, messagesByPeer, activeId, sidebarSearchQuery, summaries, isBlocked, isMuted])
 
   // Build message requests list (conversations from unknown senders)
   const messageRequests = React.useMemo<ConversationPreview[]>(() => {
@@ -927,6 +967,36 @@ export function DashboardLayout() {
       scrollRef.current.scrollIntoView({ behavior: "smooth" })
     }
   }, [visibleMessages, activeId, chatSearchQuery]) // Removed scrollToMessageId from dependencies to avoid re-triggering on clear
+
+  // Effect 3: Reset search index and scroll to first match when query changes
+  const prevQueryRef = React.useRef("")
+  React.useEffect(() => {
+    // Only reset and scroll when the query actually changes
+    if (chatSearchQuery !== prevQueryRef.current) {
+      prevQueryRef.current = chatSearchQuery
+      setCurrentSearchIndex(0)
+      if (chatSearchQuery.trim() && searchMatchIds.length > 0) {
+        setScrollToMessageId(searchMatchIds[0])
+      }
+    }
+  }, [chatSearchQuery, searchMatchIds])
+
+  // Search navigation handlers
+  const handleSearchNext = React.useCallback(() => {
+    if (searchMatchIds.length === 0) return
+    const nextIndex = (currentSearchIndex + 1) % searchMatchIds.length
+    setCurrentSearchIndex(nextIndex)
+    setScrollToMessageId(searchMatchIds[nextIndex])
+  }, [searchMatchIds, currentSearchIndex])
+
+  const handleSearchPrev = React.useCallback(() => {
+    if (searchMatchIds.length === 0) return
+    const prevIndex = currentSearchIndex === 0
+      ? searchMatchIds.length - 1
+      : currentSearchIndex - 1
+    setCurrentSearchIndex(prevIndex)
+    setScrollToMessageId(searchMatchIds[prevIndex])
+  }, [searchMatchIds, currentSearchIndex])
 
   React.useEffect(() => {
     if (!user?.handle) {
@@ -1127,7 +1197,7 @@ export function DashboardLayout() {
       setEditingMessage(null)
       setComposeText("")
       setSendError(null)
-      setAttachment(null)
+      setAttachments([])
     }
   }, [activeContact, editingMessage])
 
@@ -1409,6 +1479,10 @@ export function DashboardLayout() {
               : message
           )
         )
+        // Sync is_read to vault for cross-device consistency
+        await Promise.all(
+          unreadIds.map((id) => updateMessagePayload(id, { isRead: true }))
+        )
       }
 
       // Gate read receipts based on settings
@@ -1507,6 +1581,16 @@ export function DashboardLayout() {
     // Clear active selection since the user is now blocked
     setActiveId("")
   }, [activeContact, blockUser])
+
+  const handleMuteConversation = React.useCallback(async (duration: MuteDuration) => {
+    if (!activeContact) return
+    await muteConversation(activeContact.handle, duration)
+  }, [activeContact, muteConversation])
+
+  const handleUnmuteConversation = React.useCallback(async () => {
+    if (!activeContact) return
+    await unmuteConversation(activeContact.handle)
+  }, [activeContact, unmuteConversation])
 
   // Accept a message request - marks all messages from this sender as not a request
   const handleAcceptRequest = React.useCallback(async (shouldAddToContacts: boolean) => {
@@ -1913,8 +1997,12 @@ export function DashboardLayout() {
     [upsertContact]
   )
 
-  const handleAttachFile = React.useCallback(
-    async (file: File) => {
+  const MAX_FILE_SIZE = 10 * 1024 * 1024 // 10 MB per file
+  const MAX_TOTAL_SIZE = 15 * 1024 * 1024 // 15 MB total
+  const MAX_FILE_COUNT = 10
+
+  const handleAttachFiles = React.useCallback(
+    async (files: File[]) => {
       if (!activeContact) {
         setSendError("Select a chat before attaching files.")
         return
@@ -1926,39 +2014,87 @@ export function DashboardLayout() {
       if (isBusy) {
         return
       }
-      if (file.size > 10 * 1024 * 1024) {
-        setSendError("File too large (max 10MB)")
+
+      // Calculate current total size
+      const currentTotalSize = attachments.reduce((sum, a) => sum + a.size, 0)
+      const currentCount = attachments.length
+
+      // Filter and validate files
+      const validFiles: File[] = []
+      let newTotalSize = currentTotalSize
+
+      for (const file of files) {
+        // Check file count limit
+        if (currentCount + validFiles.length >= MAX_FILE_COUNT) {
+          setSendError(`Maximum ${MAX_FILE_COUNT} files allowed`)
+          break
+        }
+
+        // Check individual file size
+        if (file.size > MAX_FILE_SIZE) {
+          setSendError(`"${file.name}" is too large (max 10MB per file)`)
+          continue
+        }
+
+        // Check total size limit
+        if (newTotalSize + file.size > MAX_TOTAL_SIZE) {
+          setSendError(`Total attachment size exceeds 15MB limit`)
+          break
+        }
+
+        validFiles.push(file)
+        newTotalSize += file.size
+      }
+
+      if (validFiles.length === 0) {
         return
       }
-      const reader = new FileReader()
-      reader.onload = () => {
-        const dataUrl = reader.result as string
-        const base64 = dataUrl.split(",")[1]
-        if (!base64) {
-          setSendError("Unable to read file.")
-          return
-        }
-        setAttachment({
-          name: file.name,
-          type: file.type,
-          size: file.size,
-          data: base64,
+
+      // Read all valid files
+      const readFile = (file: File): Promise<{ name: string; type: string; size: number; data: string } | null> => {
+        return new Promise((resolve) => {
+          const reader = new FileReader()
+          reader.onload = () => {
+            const dataUrl = reader.result as string
+            const base64 = dataUrl.split(",")[1]
+            if (!base64) {
+              resolve(null)
+              return
+            }
+            resolve({
+              name: file.name,
+              type: file.type,
+              size: file.size,
+              data: base64,
+            })
+          }
+          reader.onerror = () => resolve(null)
+          reader.readAsDataURL(file)
         })
+      }
+
+      const results = await Promise.all(validFiles.map(readFile))
+      const newAttachments = results.filter((r): r is NonNullable<typeof r> => r !== null)
+
+      if (newAttachments.length > 0) {
+        setAttachments((prev) => [...prev, ...newAttachments])
         setSendError(null)
-        if (fileInputRef.current) fileInputRef.current.value = ""
       }
-      reader.onerror = () => {
-        setSendError("Unable to read file.")
-      }
-      reader.readAsDataURL(file)
+
+      if (fileInputRef.current) fileInputRef.current.value = ""
     },
-    [activeContact, editingMessage, isBusy]
+    [activeContact, editingMessage, isBusy, attachments]
+  )
+
+  const handleAttachFile = React.useCallback(
+    (file: File) => handleAttachFiles([file]),
+    [handleAttachFiles]
   )
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) return
-    void handleAttachFile(file)
+    const files = e.target.files
+    if (!files || files.length === 0) return
+    void handleAttachFiles(Array.from(files))
   }
 
   const handlePasteAttachment = React.useCallback(
@@ -2076,7 +2212,7 @@ export function DashboardLayout() {
     setEditingMessage(message)
     setComposeText(message.text)
     setSendError(null)
-    setAttachment(null)
+    setAttachments([])
     setReactionPickerId(null)
     if (fileInputRef.current) fileInputRef.current.value = ""
     requestAnimationFrame(() => textareaRef.current?.focus())
@@ -2111,7 +2247,7 @@ export function DashboardLayout() {
 
   const handleSendMessage = React.useCallback(async () => {
     const trimmed = composeText.trim()
-    if (!trimmed && !attachment) {
+    if (!trimmed && attachments.length === 0) {
       return
     }
     if (!activeContact || !masterKey || !identityPrivateKey || !publicIdentityKey) {
@@ -2152,12 +2288,14 @@ export function DashboardLayout() {
         identityPrivateKey
       )
       
-      const attachments = attachment ? [{
-        filename: attachment.name,
-        mimeType: attachment.type,
-        size: attachment.size,
-        data: attachment.data
-      }] : undefined
+      const messageAttachments = attachments.length > 0
+        ? attachments.map((a) => ({
+            filename: a.name,
+            mimeType: a.type,
+            size: a.size,
+            data: a.data,
+          }))
+        : undefined
       const replyPayload = replyToMessage
         ? buildReplyPayload(replyToMessage)
         : null
@@ -2168,7 +2306,7 @@ export function DashboardLayout() {
         sender_signature: signature,
         sender_identity_key: publicIdentityKey,
         message_id: messageId,
-        attachments,
+        attachments: messageAttachments,
         ...(replyPayload ?? {}),
       })
       const encryptedBlob = await encryptTransitEnvelope(
@@ -2176,9 +2314,34 @@ export function DashboardLayout() {
         activeContact.publicTransportKey
       )
 
+      // Create encrypted push preview for E2EE notifications
+      const previewText =
+        trimmed.length > 200 ? trimmed.slice(0, 197) + "..." : trimmed
+      const senderAvatarUrl = settings.avatarFilename
+        ? `${process.env.NEXT_PUBLIC_API_URL}/uploads/avatars/${settings.avatarFilename}`
+        : undefined
+      const attachmentPreviewText = attachments.length > 0
+        ? attachments.length === 1
+          ? `📎 ${attachments[0].name}`
+          : `📎 ${attachments.length} files`
+        : null
+      const encryptedPushPreview = await createEncryptedPushPreview(
+        {
+          type: "message",
+          sender_handle: user.handle,
+          sender_display_name: user.username || undefined,
+          sender_avatar_url: senderAvatarUrl,
+          preview: attachmentPreviewText
+            ? `${attachmentPreviewText}${previewText ? `: ${previewText}` : ""}`
+            : previewText,
+          message_id: messageId,
+        },
+        activeContact.publicTransportKey
+      )
+
       const localPayload = JSON.stringify({
         text: trimmed,
-        attachments,
+        attachments: messageAttachments,
         peerHandle: activeContact.handle,
         peerUsername: getContactDisplayName(activeContact),
         peerHost: activeContact.host,
@@ -2222,6 +2385,7 @@ export function DashboardLayout() {
           encrypted_blob: encryptedBlob,
           message_id: messageId,
           event_type: "message",
+          encrypted_push_preview: encryptedPushPreview,
           sender_vault_blob: encryptedLocal.ciphertext,
           sender_vault_iv: encryptedLocal.iv,
           sender_vault_signature_verified: true,
@@ -2236,7 +2400,7 @@ export function DashboardLayout() {
       })
       setComposeText("")
       setReplyToMessage(null)
-      setAttachment(null)
+      setAttachments([])
       if (fileInputRef.current) fileInputRef.current.value = ""
     } catch (error) {
       setSendError(
@@ -2254,7 +2418,7 @@ export function DashboardLayout() {
     updateMessagePayload,
     user?.handle,
     user?.id,
-    attachment,
+    attachments,
     replyToMessage,
     buildReplyPayload,
   ])
@@ -2605,6 +2769,25 @@ export function DashboardLayout() {
           activeContact.publicTransportKey
         )
 
+        // Create encrypted push preview for E2EE notifications
+        const senderAvatarUrl = settings.avatarFilename
+          ? `${process.env.NEXT_PUBLIC_API_URL}/uploads/avatars/${settings.avatarFilename}`
+          : undefined
+        const encryptedPushPreview = await createEncryptedPushPreview(
+          {
+            type: "reaction",
+            sender_handle: user.handle,
+            sender_display_name: user.username || undefined,
+            sender_avatar_url: senderAvatarUrl,
+            preview:
+              reactionAction === "add"
+                ? `Reacted with ${emoji}`
+                : `Removed ${emoji} reaction`,
+            message_id: targetMessageId,
+          },
+          activeContact.publicTransportKey
+        )
+
         const localPayload = JSON.stringify({
           type: "reaction",
           text: emoji,
@@ -2652,6 +2835,7 @@ export function DashboardLayout() {
             encrypted_blob: encryptedBlob,
             message_id: targetMessageId,
             event_id: reactionEventId,
+            encrypted_push_preview: encryptedPushPreview,
             sender_vault_blob: encryptedLocal.ciphertext,
             sender_vault_iv: encryptedLocal.iv,
             sender_vault_signature_verified: true,
@@ -2821,7 +3005,12 @@ export function DashboardLayout() {
           onChatSearchClose={() => {
             setChatSearchQuery("")
             setIsChatSearchOpen(false)
+            setCurrentSearchIndex(0)
           }}
+          searchMatchCount={searchMatchIds.length}
+          currentSearchIndex={currentSearchIndex}
+          onSearchNext={handleSearchNext}
+          onSearchPrev={handleSearchPrev}
           onShowRecipientInfo={() => setShowRecipientInfo(true)}
           onExportChat={handleExportChat}
           onDeleteChat={handleDeleteChat}
@@ -2834,6 +3023,9 @@ export function DashboardLayout() {
           showAddContact={!isActiveContactSaved}
           onStartCall={handleStartCall}
           isCallDisabled={callState.status !== "idle" || externalCallActive}
+          isMuted={isActiveContactMuted}
+          onMute={handleMuteConversation}
+          onUnmute={handleUnmuteConversation}
         />
 
         <div
@@ -2844,9 +3036,22 @@ export function DashboardLayout() {
           onDrop={handleDropAttachment}
         >
           <div className="pointer-events-none absolute inset-0 z-0 bg-[radial-gradient(circle_at_top,_var(--chat-glow),_transparent_55%)]" />
-          <div className="pointer-events-none absolute inset-0 z-0 opacity-40 bg-[linear-gradient(90deg,var(--chat-grid)_1px,transparent_1px),linear-gradient(0deg,var(--chat-grid)_1px,transparent_1px)] bg-[size:32px_32px]" />
+          <div className={cn(
+            "pointer-events-none absolute inset-0 z-0 opacity-40",
+                customization.chatBackground === "dots" && "chat-bg-dots",
+                customization.chatBackground === "grid" && "chat-bg-grid",
+                customization.chatBackground === "waves" && "chat-bg-waves"
+              )}
+            />
           {isDragOver ? (
-            <div className="pointer-events-none absolute inset-4 z-20 flex items-center justify-center rounded-2xl border-2 border-dashed border-emerald-300 bg-emerald-50/80 text-sm font-medium text-emerald-700 shadow-lg dark:border-emerald-400/50 dark:bg-emerald-900/40 dark:text-emerald-100">
+            <div
+              className="pointer-events-none absolute inset-4 z-20 flex items-center justify-center rounded-2xl border-2 border-dashed text-sm font-medium shadow-lg"
+              style={{
+                borderColor: "var(--theme-accent)",
+                backgroundColor: "color-mix(in srgb, var(--theme-accent-light) 80%, transparent)",
+                color: "var(--theme-accent-dark)",
+              }}
+            >
               Drop file to attach
             </div>
           ) : null}
@@ -2855,7 +3060,7 @@ export function DashboardLayout() {
               {!activeContact ? (
                 <div className="flex min-h-[60vh] items-center justify-center px-4 py-8">
                   <div className="w-full max-w-md rounded-2xl border bg-card/80 p-6 text-center shadow-sm">
-                    <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-emerald-600 text-white shadow-sm">
+                    <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-[var(--theme-accent)] text-white shadow-sm">
                       <ShieldCheck className="h-6 w-6" />
                     </div>
                     <h2 className="text-lg font-semibold">Ratchet Chat</h2>
@@ -2864,15 +3069,15 @@ export function DashboardLayout() {
                     </p>
                     <div className="mt-4 space-y-2 text-left text-xs text-muted-foreground">
                       <div className="flex items-start gap-2">
-                        <span className="mt-1 h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                        <span className="mt-1 h-1.5 w-1.5 rounded-full bg-[var(--theme-accent)]" />
                         <span>Keys stay on your devices, never the server.</span>
                       </div>
                       <div className="flex items-start gap-2">
-                        <span className="mt-1 h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                        <span className="mt-1 h-1.5 w-1.5 rounded-full bg-[var(--theme-accent)]" />
                         <span>Server stores ciphertext only, not readable content.</span>
                       </div>
                       <div className="flex items-start gap-2">
-                        <span className="mt-1 h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                        <span className="mt-1 h-1.5 w-1.5 rounded-full bg-[var(--theme-accent)]" />
                         <span>Select a chat on the left to begin.</span>
                       </div>
                     </div>
@@ -2930,7 +3135,7 @@ export function DashboardLayout() {
                               type="checkbox"
                               checked={addToContactsOnAccept}
                               onChange={(e) => setAddToContactsOnAccept(e.target.checked)}
-                              className="h-4 w-4 rounded border-amber-400 text-emerald-600 focus:ring-emerald-500 dark:border-amber-600"
+                              className="h-4 w-4 rounded border-amber-400 text-[var(--theme-accent)] focus:ring-[var(--theme-accent)] dark:border-amber-600"
                             />
                             <span className="text-xs text-amber-700 dark:text-amber-300">
                               Add to contacts when accepting
@@ -3011,6 +3216,8 @@ export function DashboardLayout() {
                         onReply={beginReply}
                         onEdit={beginEdit}
                         onDelete={(msg) => void handleDeleteMessage(msg)}
+                        searchQuery={chatSearchQuery}
+                        theme={customization}
                       />
                     )
                   })}
@@ -3028,15 +3235,19 @@ export function DashboardLayout() {
             onComposeTextChange={setComposeText}
             editingMessage={editingMessage}
             replyToMessage={replyToMessage}
-            attachment={attachment}
+            attachments={attachments}
             isBusy={isBusy}
             sendError={sendError}
             textareaRef={textareaRef}
             fileInputRef={fileInputRef}
             onCancelEdit={cancelEdit}
             onCancelReply={cancelReply}
-            onRemoveAttachment={() => {
-              setAttachment(null)
+            onRemoveAttachment={(index) => {
+              setAttachments((prev) => prev.filter((_, i) => i !== index))
+              if (fileInputRef.current) fileInputRef.current.value = ""
+            }}
+            onClearAttachments={() => {
+              setAttachments([])
               if (fileInputRef.current) fileInputRef.current.value = ""
             }}
             onFileSelect={handleFileSelect}

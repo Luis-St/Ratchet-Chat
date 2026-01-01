@@ -1,0 +1,128 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+
+env:
+  REGISTRY: ghcr.io
+  CLIENT_IMAGE_NAME: ${{ github.repository }}/client
+
+jobs:
+  update-changelog:
+    name: Update Changelog & Version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      commit_sha: ${{ steps.commit.outputs.sha }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Get version from tag
+        id: version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
+
+      - name: Get release date
+        id: date
+        run: |
+          DATE=$(echo "${{ github.event.release.published_at }}" | cut -d'T' -f1)
+          echo "date=$DATE" >> $GITHUB_OUTPUT
+          echo "Date: $DATE"
+
+      - name: Update package.json version
+        run: |
+          cd client
+          npm version ${{ steps.version.outputs.version }} --no-git-tag-version
+
+      - name: Update CHANGELOG.md
+        env:
+          RELEASE_BODY: ${{ github.event.release.body }}
+        run: |
+          node .github/scripts/update-changelog.mjs \
+            "${{ steps.version.outputs.version }}" \
+            "${{ steps.date.outputs.date }}" \
+            "$RELEASE_BODY"
+
+      - name: Commit and push changes
+        id: commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Check if there are changes to commit
+          if git diff --quiet client/package.json client/public/CHANGELOG.md; then
+            echo "No changes to commit"
+            echo "sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          git add client/package.json client/public/CHANGELOG.md
+          git commit -m "chore: release v${{ steps.version.outputs.version }}
+
+          - Update version in package.json
+          - Update CHANGELOG.md with release notes
+
+          [skip ci]"
+          git push origin main
+          echo "sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+
+  build-client:
+    name: Build & Push Client Image
+    runs-on: ubuntu-latest
+    needs: update-changelog
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.update-changelog.outputs.commit_sha }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.CLIENT_IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./client
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            NEXT_PUBLIC_APP_VERSION=${{ needs.update-changelog.outputs.version }}
+            NEXT_PUBLIC_CLIENT_COMMIT=${{ needs.update-changelog.outputs.commit_sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

@@ -19,6 +19,14 @@ import remarkGfm from "remark-gfm"
 
 import { Button } from "@/components/ui/button"
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog"
+import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
@@ -31,6 +39,7 @@ import { useSettings } from "@/hooks/useSettings"
 import { LinkEmbed, LinkEmbedSkeleton } from "@/components/chat/LinkEmbed"
 import { EmojiMartEmoji } from "@/components/emoji/EmojiMartEmoji"
 import type { StoredMessage } from "@/types/dashboard"
+import type { ResolvedTheme } from "@/hooks/useThemeCustomization"
 
 type MessageBubbleProps = {
   message: StoredMessage
@@ -41,6 +50,7 @@ type MessageBubbleProps = {
   isBusy: boolean
   editingMessage: StoredMessage | null
   highlightedMessageId: string | null
+  theme?: ResolvedTheme
   onMessageTap: (event: React.MouseEvent, message: StoredMessage) => void
   onScrollToMessage: (id: string) => void
   onPreviewImage: (src: string) => void
@@ -50,6 +60,7 @@ type MessageBubbleProps = {
   onReply: (message: StoredMessage) => void
   onEdit: (message: StoredMessage) => void
   onDelete: (message: StoredMessage) => void
+  searchQuery?: string
 }
 
 export function MessageBubble({
@@ -61,6 +72,7 @@ export function MessageBubble({
   isBusy,
   editingMessage,
   highlightedMessageId,
+  theme,
   onMessageTap,
   onScrollToMessage,
   onPreviewImage,
@@ -70,6 +82,7 @@ export function MessageBubble({
   onReply,
   onEdit,
   onDelete,
+  searchQuery,
 }: MessageBubbleProps) {
   const meta = formatMessageTime(message.timestamp)
   const deliveredAt = message.direction === "out" ? message.deliveredAt : null
@@ -95,8 +108,93 @@ export function MessageBubble({
     ? truncateText(getReplyPreviewText(replyTarget), 90)
     : "Message deleted"
 
+  const [isInfoOpen, setIsInfoOpen] = React.useState(false)
+  const [isSwiping, setIsSwiping] = React.useState(false)
+  const [swipeOffset, setSwipeOffset] = React.useState(0)
+  const swipeStartRef = React.useRef<{
+    x: number
+    y: number
+    time: number
+    target: EventTarget | null
+  } | null>(null)
+  const swipeAxisRef = React.useRef<"x" | "y" | null>(null)
+  const lastSwipeAtRef = React.useRef<number | null>(null)
+
   // Link embed preview
   const { settings } = useSettings()
+
+  // Search text highlighting
+  const highlightText = React.useCallback(
+    (text: string): React.ReactNode => {
+      if (!searchQuery?.trim() || !text) return text
+
+      const escaped = searchQuery.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+      const regex = new RegExp(`(${escaped})`, "gi")
+      const parts = text.split(regex)
+
+      return parts.map((part, i) =>
+        part.toLowerCase() === searchQuery.toLowerCase() ? (
+          <mark
+            key={i}
+            className="bg-yellow-300 dark:bg-yellow-500/50 rounded px-0.5"
+          >
+            {part}
+          </mark>
+        ) : (
+          part
+        )
+      )
+    },
+    [searchQuery]
+  )
+
+  // Memoize ReactMarkdown components to avoid re-renders
+  const markdownComponents = React.useMemo(
+    () => ({
+      a: ({ href, children, ...props }: React.ComponentProps<"a">) => (
+        <a
+          href={href}
+          onClick={(e) => {
+            e.preventDefault()
+            if (href) onPendingLink(href)
+          }}
+          {...props}
+        >
+          {children}
+        </a>
+      ),
+      p: ({ children }: { children?: React.ReactNode }) => (
+        <p>
+          {React.Children.map(children, (child) =>
+            typeof child === "string" ? highlightText(child) : child
+          )}
+        </p>
+      ),
+      li: ({ children, ...props }: React.ComponentProps<"li">) => (
+        <li {...props}>
+          {React.Children.map(children, (child) =>
+            typeof child === "string" ? highlightText(child) : child
+          )}
+        </li>
+      ),
+      strong: ({ children, ...props }: React.ComponentProps<"strong">) => (
+        <strong {...props}>
+          {React.Children.map(children, (child) =>
+            typeof child === "string" ? highlightText(child) : child
+          )}
+        </strong>
+      ),
+      em: ({ children, ...props }: React.ComponentProps<"em">) => (
+        <em {...props}>
+          {React.Children.map(children, (child) =>
+            typeof child === "string" ? highlightText(child) : child
+          )}
+        </em>
+      ),
+    }),
+    [highlightText, onPendingLink]
+  )
+
   const embeddableUrl = React.useMemo(() => {
     if (!message.text) return null
     const url = extractUrl(message.text)
@@ -105,6 +203,141 @@ export function MessageBubble({
   const { data: embedData, isLoading: isEmbedLoading } = useEmbedPreview(
     embeddableUrl,
     settings.enableLinkPreviews
+  )
+  const attachmentsCount = message.attachments?.length ?? 0
+  const attachmentsSize = message.attachments?.reduce((sum, att) => sum + att.size, 0) ?? 0
+  const statusLabel =
+    message.direction === "out"
+      ? receiptState
+        ? receiptState.toLowerCase()
+        : "sending..."
+      : "received"
+  const statusTone =
+    receiptState === "READ"
+      ? "text-sky-600"
+      : receiptState === "PROCESSED"
+      ? "text-amber-600"
+      : receiptState === "DELIVERED"
+      ? "text-emerald-600"
+      : "text-muted-foreground"
+
+  const formatInfoTimestamp = React.useCallback((value?: string | null) => {
+    if (!value) return "—"
+    const date = new Date(value)
+    if (Number.isNaN(date.getTime())) return "—"
+    return date.toLocaleString()
+  }, [])
+
+  const handleTouchStart = React.useCallback(
+    (event: React.TouchEvent<HTMLDivElement>) => {
+      if (!isTouchActions) return
+      if (event.touches.length !== 1) return
+      const touch = event.touches[0]
+      swipeAxisRef.current = null
+      setIsSwiping(false)
+      setSwipeOffset(0)
+      swipeStartRef.current = {
+        x: touch.clientX,
+        y: touch.clientY,
+        time: Date.now(),
+        target: event.target,
+      }
+    },
+    [isTouchActions]
+  )
+
+  const handleTouchMove = React.useCallback(
+    (event: React.TouchEvent<HTMLDivElement>) => {
+      if (!isTouchActions) return
+      const start = swipeStartRef.current
+      if (!start) return
+      const touch = event.touches[0]
+      if (!touch) return
+      const dx = touch.clientX - start.x
+      const dy = touch.clientY - start.y
+      const absX = Math.abs(dx)
+      const absY = Math.abs(dy)
+      if (!swipeAxisRef.current) {
+        if (absX < 6 && absY < 6) return
+        swipeAxisRef.current = absX > absY + 8 ? "x" : "y"
+      }
+      // Allow vertical scrolling - only handle horizontal swipes
+      if (swipeAxisRef.current === "y") {
+        return
+      }
+      if (start.target instanceof HTMLElement) {
+        // Only block swipe on elements that explicitly disable it
+        if (start.target.closest('[data-no-swipe="true"]')) {
+          swipeAxisRef.current = null
+          swipeStartRef.current = null
+          setIsSwiping(false)
+          setSwipeOffset(0)
+          return
+        }
+      }
+      // Only prevent default for horizontal swipes
+      if (event.cancelable) {
+        event.preventDefault()
+      }
+      if (!isSwiping) {
+        setIsSwiping(true)
+      }
+      const maxOffset = 120
+      const linearOffset = maxOffset * 0.7
+      const viewportWidth =
+        typeof window !== "undefined" ? window.innerWidth : 360
+      const slowdownStart = viewportWidth * 0.5
+      const absDx = Math.abs(dx)
+      const eased =
+        absDx <= slowdownStart
+          ? (absDx / slowdownStart) * linearOffset
+          : linearOffset +
+            (maxOffset - linearOffset) *
+              (1 - Math.exp(-(absDx - slowdownStart) / (slowdownStart * 0.35)))
+      const nextOffset = Math.sign(dx) * Math.min(maxOffset, eased)
+      setSwipeOffset(nextOffset)
+    },
+    [isSwiping, isTouchActions]
+  )
+
+  const handleTouchEnd = React.useCallback(
+    (event: React.TouchEvent<HTMLDivElement>) => {
+      if (!isTouchActions) return
+      const start = swipeStartRef.current
+      swipeStartRef.current = null
+      if (!start) return
+      const swipeAxis = swipeAxisRef.current
+      swipeAxisRef.current = null
+      if (swipeAxis === "y") {
+        setIsSwiping(false)
+        setSwipeOffset(0)
+        return
+      }
+      const touch = event.changedTouches[0]
+      if (!touch) return
+      const dx = touch.clientX - start.x
+      const dy = touch.clientY - start.y
+      const absX = Math.abs(dx)
+      const absY = Math.abs(dy)
+      const swipeThreshold = 72
+      if (absX > 12 && absX > absY + 12) {
+        lastSwipeAtRef.current = Date.now()
+      }
+      if (absX < swipeThreshold || absX < absY + 12) {
+        setIsSwiping(false)
+        setSwipeOffset(0)
+        return
+      }
+      lastSwipeAtRef.current = Date.now()
+      if (dx > 0) {
+        onReply(message)
+      } else {
+        setIsInfoOpen(true)
+      }
+      setIsSwiping(false)
+      setSwipeOffset(0)
+    },
+    [isTouchActions, message, onReply]
   )
 
   return (
@@ -131,14 +364,41 @@ export function MessageBubble({
         >
           <div
             className={cn(
-              "w-fit max-w-full px-2.5 py-2.5 text-sm leading-relaxed shadow-sm transition-all duration-500 break-words [word-break:break-word] overflow-hidden",
+              "w-fit max-w-full text-sm leading-relaxed shadow-sm transition-all duration-500 break-words [word-break:break-word] overflow-hidden",
+              theme?.compactMode ? "px-2 py-1.5" : "px-2.5 py-2.5",
               highlightedMessageId === message.id &&
-                "ring-2 ring-emerald-500 ring-offset-2 dark:ring-offset-slate-900 scale-[1.02]",
+                "ring-2 ring-offset-2 dark:ring-offset-slate-900 scale-[1.02]",
               message.direction === "out"
-                ? "bg-emerald-100 dark:bg-emerald-900 text-foreground rounded-2xl rounded-br-sm"
-                : "bg-card dark:bg-muted text-foreground rounded-2xl rounded-bl-sm"
+                ? "rounded-2xl rounded-br-sm"
+                : "rounded-2xl rounded-bl-sm"
             )}
-            onClick={(event) => onMessageTap(event, message)}
+            onClick={(event) => {
+              if (
+                lastSwipeAtRef.current &&
+                Date.now() - lastSwipeAtRef.current < 400
+              ) {
+                lastSwipeAtRef.current = null
+                return
+              }
+              onMessageTap(event, message)
+            }}
+            onTouchStart={handleTouchStart}
+            onTouchMove={handleTouchMove}
+            onTouchEnd={handleTouchEnd}
+            style={{
+              transform: swipeOffset ? `translateX(${swipeOffset}px)` : undefined,
+              transition: isSwiping ? "none" : "transform 200ms ease",
+              touchAction: isTouchActions ? "pan-y" : undefined,
+              backgroundColor: message.direction === "out"
+                ? (theme?.outgoingBubble ?? "var(--bubble-outgoing)")
+                : (theme?.incomingBubble ?? "var(--bubble-incoming)"),
+              color: message.direction === "out"
+                ? (theme?.outgoingText ?? "var(--bubble-outgoing-text)")
+                : (theme?.incomingText ?? "var(--bubble-incoming-text)"),
+              ...(highlightedMessageId === message.id && {
+                "--tw-ring-color": theme?.accent ?? "var(--theme-accent)",
+              } as React.CSSProperties),
+            }}
           >
             {message.replyTo?.messageId ? (
               <div
@@ -152,12 +412,9 @@ export function MessageBubble({
                 className={cn(
                   "mb-2 flex flex-col gap-0.5 rounded-md px-2 py-1 text-[11px]",
                   message.direction === "out"
-                    ? "bg-emerald-300/70 text-emerald-950 dark:bg-emerald-800/70 dark:text-emerald-100"
-                    : "bg-slate-200/80 text-slate-700 dark:bg-slate-700/60 dark:text-slate-200",
-                  replyTarget &&
-                    (message.direction === "out"
-                      ? "cursor-pointer hover:bg-emerald-300/90 dark:hover:bg-emerald-800/90"
-                      : "cursor-pointer hover:bg-slate-200/95 dark:hover:bg-slate-700/80")
+                    ? "bg-white/20 text-white/90"
+                    : "bg-black/10 text-foreground/80 dark:bg-white/10 dark:text-foreground/80",
+                  replyTarget && "cursor-pointer hover:bg-white/30 dark:hover:bg-white/20"
                 )}
               >
                 {replyTarget ? (
@@ -205,7 +462,8 @@ export function MessageBubble({
                     <img
                       src={`data:${att.mimeType};base64,${att.data}`}
                       alt={att.filename}
-                      className="max-w-full h-auto max-h-64 object-cover cursor-pointer hover:opacity-90 transition-opacity"
+                      className="max-w-full h-auto max-h-64 object-cover cursor-pointer hover:opacity-90 transition-opacity touch-pan-y"
+                      draggable={false}
                       onClick={() =>
                         onPreviewImage(`data:${att.mimeType};base64,${att.data}`)
                       }
@@ -232,25 +490,21 @@ export function MessageBubble({
               ))
             )}
             {message.text && (
-              <div className="whitespace-pre-wrap prose prose-sm dark:prose-invert prose-emerald max-w-none prose-p:leading-relaxed prose-pre:bg-muted prose-pre:p-2 prose-pre:rounded-md prose-code:text-emerald-600 dark:prose-code:text-emerald-400 break-words [word-break:break-word]">
+              <div
+                className="whitespace-pre-wrap prose prose-sm max-w-none prose-p:leading-relaxed prose-pre:p-2 prose-pre:rounded-md break-words [word-break:break-word] prose-a:underline prose-code:rounded prose-code:px-1"
+                style={{
+                  // Force all prose elements to inherit text color from bubble
+                  ["--tw-prose-body" as string]: "inherit",
+                  ["--tw-prose-headings" as string]: "inherit",
+                  ["--tw-prose-links" as string]: "inherit",
+                  ["--tw-prose-bold" as string]: "inherit",
+                  ["--tw-prose-code" as string]: "inherit",
+                  ["--tw-prose-quotes" as string]: "inherit",
+                }}
+              >
                 <ReactMarkdown
                   remarkPlugins={[remarkGfm]}
-                  components={{
-                    a: ({ href, children, ...props }) => {
-                      return (
-                        <a
-                          href={href}
-                          onClick={(e) => {
-                            e.preventDefault()
-                            if (href) onPendingLink(href)
-                          }}
-                          {...props}
-                        >
-                          {children}
-                        </a>
-                      )
-                    },
-                  }}
+                  components={markdownComponents}
                 >
                   {message.text}
                 </ReactMarkdown>
@@ -269,26 +523,31 @@ export function MessageBubble({
             )}
             <div
               className={cn(
-                "mt-2 flex w-full items-center gap-1.5 text-[10px] uppercase tracking-wide text-muted-foreground",
+                "mt-2 flex w-full items-center gap-1.5 text-[10px] uppercase tracking-wide",
                 message.direction === "out" ? "justify-end text-right" : "justify-start"
               )}
+              style={{
+                color: message.direction === "out"
+                  ? (theme?.outgoingText ?? "var(--bubble-outgoing-text)")
+                  : (theme?.incomingText ?? "var(--bubble-incoming-text)"),
+              }}
             >
-              <span>{meta}</span>
-              {message.editedAt ? <span>Edited</span> : null}
+              <span style={{ opacity: 0.7 }}>{meta}</span>
+              {message.editedAt ? <span style={{ opacity: 0.7 }}>Edited</span> : null}
               {message.verified && (
                 <ShieldCheck
-                  className="h-3 w-3 text-emerald-500"
+                  className="h-3 w-3 text-emerald-400"
                   aria-label="Verified Signature"
                 />
               )}
               {receiptState ? (
                 receiptState === "DELIVERED" ? (
-                  <Check className="h-3 w-3" aria-label="Sent" />
+                  <Check className="h-3 w-3" style={{ opacity: 0.6 }} aria-label="Sent" />
                 ) : receiptState === "PROCESSED" ? (
-                  <CheckCheck className="h-3 w-3" aria-label="Delivered" />
+                  <CheckCheck className="h-3 w-3" style={{ opacity: 0.6 }} aria-label="Delivered" />
                 ) : receiptState === "READ" ? (
                   <CheckCheck
-                    className="h-3 w-3 text-sky-500"
+                    className="h-3 w-3 text-sky-400"
                     aria-label="Read"
                   />
                 ) : null
@@ -416,58 +675,146 @@ export function MessageBubble({
               </TooltipContent>
             </Tooltip>
           ) : null}
-          <Tooltip>
-            <TooltipTrigger asChild>
+          <Dialog open={isInfoOpen} onOpenChange={setIsInfoOpen}>
+            <DialogTrigger asChild>
               <Button
                 variant="ghost"
                 size="icon"
                 className="h-6 w-6 text-slate-400 hover:text-slate-600"
+                aria-label="Message info"
               >
                 <Info className="h-4 w-4" />
               </Button>
-            </TooltipTrigger>
-            <TooltipContent side="top" className="text-xs">
-              <div className="space-y-1">
-                <p>
-                  <span className="font-semibold">Status:</span>{" "}
-                  {message.direction === "out"
-                    ? receiptState
-                      ? receiptState.toLowerCase()
-                      : "sending..."
-                    : "received"}
-                </p>
-                {message.direction === "out" && deliveredAt ? (
-                  <p>
-                    <span className="font-semibold">Delivered:</span>{" "}
-                    {new Date(deliveredAt).toLocaleString()}
-                  </p>
-                ) : null}
-                {message.direction === "out" && processedAt ? (
-                  <p>
-                    <span className="font-semibold">Processed:</span>{" "}
-                    {new Date(processedAt).toLocaleString()}
-                  </p>
-                ) : null}
-                {message.direction === "out" && readAt ? (
-                  <p>
-                    <span className="font-semibold">Read:</span>{" "}
-                    {new Date(readAt).toLocaleString()}
-                  </p>
-                ) : null}
-                <p>
-                  <span className="font-semibold">Signature:</span>{" "}
-                  {message.verified ? "Verified" : "Unverified"}
-                </p>
-                <p>
-                  <span className="font-semibold">Time:</span>{" "}
-                  {new Date(message.timestamp).toLocaleString()}
-                </p>
-                <p className="font-mono text-[9px] text-muted-foreground break-all">
-                  {message.id}
-                </p>
+            </DialogTrigger>
+            <DialogContent className="sm:max-w-[540px]">
+              <DialogHeader>
+                <DialogTitle>Message info</DialogTitle>
+                <DialogDescription>
+                  Delivery, security, and metadata for this message.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="space-y-4">
+                <div className="rounded-lg border bg-muted/50 p-4">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-semibold">Delivery</span>
+                    <span className={cn("text-xs font-semibold uppercase tracking-wide", statusTone)}>
+                      {statusLabel}
+                    </span>
+                  </div>
+                  <div className="mt-3 grid grid-cols-1 gap-2 text-xs sm:grid-cols-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-muted-foreground">
+                        {message.direction === "out" ? "Sent" : "Received"}
+                      </span>
+                      <span className="font-mono">{formatInfoTimestamp(message.timestamp)}</span>
+                    </div>
+                    {message.editedAt ? (
+                      <div className="flex items-center justify-between">
+                        <span className="text-muted-foreground">Edited</span>
+                        <span className="font-mono">{formatInfoTimestamp(message.editedAt)}</span>
+                      </div>
+                    ) : null}
+                    {message.direction === "out" && deliveredAt ? (
+                      <div className="flex items-center justify-between">
+                        <span className="text-muted-foreground">Delivered</span>
+                        <span className="font-mono">{formatInfoTimestamp(deliveredAt)}</span>
+                      </div>
+                    ) : null}
+                    {message.direction === "out" && processedAt ? (
+                      <div className="flex items-center justify-between">
+                        <span className="text-muted-foreground">Processed</span>
+                        <span className="font-mono">{formatInfoTimestamp(processedAt)}</span>
+                      </div>
+                    ) : null}
+                    {message.direction === "out" && readAt ? (
+                      <div className="flex items-center justify-between">
+                        <span className="text-muted-foreground">Read</span>
+                        <span className="font-mono">{formatInfoTimestamp(readAt)}</span>
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+
+                <div className="rounded-lg border bg-muted/50 p-4">
+                  <div className="text-sm font-semibold">Message</div>
+                  <div className="mt-3 grid grid-cols-1 gap-2 text-xs sm:grid-cols-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-muted-foreground">Direction</span>
+                      <span className="font-mono">
+                        {message.direction === "out" ? "Outgoing" : "Incoming"}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-muted-foreground">Sender</span>
+                      <span className="font-mono">
+                        {message.direction === "out"
+                          ? "You"
+                          : message.peerUsername ?? message.peerHandle}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-muted-foreground">Characters</span>
+                      <span className="font-mono">{message.text?.length ?? 0}</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-muted-foreground">Attachments</span>
+                      <span className="font-mono">
+                        {attachmentsCount > 0
+                          ? `${attachmentsCount} (${(attachmentsSize / 1024).toFixed(1)} KB)`
+                          : "None"}
+                      </span>
+                    </div>
+                  </div>
+                  {message.replyTo?.messageId ? (
+                    <div className="mt-3 rounded-md border border-dashed border-border/70 bg-background/60 p-3 text-xs">
+                      <div className="text-muted-foreground">Replying to</div>
+                      <div className="mt-1 font-semibold">
+                        {replyTarget ? replySender : "Message deleted"}
+                      </div>
+                      <div className="mt-1 text-muted-foreground">
+                        {replyTarget ? replyPreview : "Original message unavailable"}
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+
+                <div className="rounded-lg border bg-muted/50 p-4">
+                  <div className="text-sm font-semibold">Security</div>
+                  <div className="mt-3 grid grid-cols-1 gap-2 text-xs sm:grid-cols-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-muted-foreground">Signature</span>
+                      <span
+                        className={cn(
+                          "font-semibold",
+                          message.verified ? "text-emerald-600" : "text-amber-600"
+                        )}
+                      >
+                        {message.verified ? "Verified" : "Unverified"}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-muted-foreground">Peer handle</span>
+                      <span className="font-mono">{message.peerHandle}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-lg border bg-muted/50 p-4">
+                  <div className="text-sm font-semibold">Identifiers</div>
+                  <div className="mt-2 text-[10px] text-muted-foreground">Local ID</div>
+                  <div className="font-mono text-[10px] break-all">{message.id}</div>
+                  {message.messageId ? (
+                    <>
+                      <div className="mt-3 text-[10px] text-muted-foreground">Server ID</div>
+                      <div className="font-mono text-[10px] break-all">
+                        {message.messageId}
+                      </div>
+                    </>
+                  ) : null}
+                </div>
               </div>
-            </TooltipContent>
-          </Tooltip>
+            </DialogContent>
+          </Dialog>
         </div>
       </div>
     </div>

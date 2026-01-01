@@ -16,6 +16,12 @@ export type EmbedCacheRecord = {
   cachedAt: number
 }
 
+export type MutedConversationRecord = {
+  handle: string           // Primary key - normalized handle (lowercase)
+  mutedUntil: number | null  // Unix timestamp or null for forever
+  mutedAt: number           // When the mute was set
+}
+
 export type MessageRecord = {
   id: string
   ownerId: string
@@ -35,6 +41,7 @@ export class RatchetDB extends Dexie {
   auth!: Table<AuthRecord, string>
   syncState!: Table<SyncStateRecord, string>
   embedCache!: Table<EmbedCacheRecord, string>
+  mutedConversations!: Table<MutedConversationRecord, string>
 
   constructor() {
     super("RatchetChat")
@@ -142,6 +149,15 @@ export class RatchetDB extends Dexie {
       auth: "&username",
       syncState: "&key",
       embedCache: "&url, cachedAt",
+    })
+    // Add mutedConversations for local mute cache (SW-accessible)
+    this.version(12).stores({
+      messages: "&id, ownerId, senderId, peerHandle, createdAt, isRead, vaultSynced, isMessageRequest, [ownerId+peerHandle], [ownerId+isMessageRequest]",
+      contacts: "&id, ownerId, createdAt",
+      auth: "&username",
+      syncState: "&key",
+      embedCache: "&url, cachedAt",
+      mutedConversations: "&handle, mutedUntil",
     })
   }
 }
