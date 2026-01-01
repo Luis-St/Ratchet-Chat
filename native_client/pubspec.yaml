@@ -35,6 +35,25 @@ dependencies:
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
 
+  # Local OPAQUE package
+  opaque_client_dart:
+    path: ../opaque_client_dart
+
+  # State Management
+  flutter_riverpod: ^2.6.1
+
+  # Secure Storage (for tokens, saved server)
+  flutter_secure_storage: ^9.2.4
+
+  # HTTP Client
+  http: ^1.3.0
+
+  # Cryptography
+  pointycastle: ^4.0.0
+
+  # Routing
+  go_router: ^14.8.1
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
