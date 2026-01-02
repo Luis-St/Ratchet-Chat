@@ -7,6 +7,7 @@ import '../data/services/crypto_service.dart';
 import '../data/services/opaque_service.dart';
 import '../data/services/passkey_service.dart';
 import '../data/services/secure_storage_service.dart';
+import '../data/services/totp_service.dart';
 
 /// Provider for the secure storage service.
 final secureStorageServiceProvider = Provider<SecureStorageService>((ref) {
@@ -33,6 +34,11 @@ final passkeyServiceProvider = Provider<PasskeyService>((ref) {
   return PasskeyService();
 });
 
+/// Provider for the TOTP service.
+final totpServiceProvider = Provider<TotpService>((ref) {
+  return TotpService();
+});
+
 /// Provider for the server repository.
 final serverRepositoryProvider = Provider<ServerRepository>((ref) {
   return ServerRepository(
@@ -49,5 +55,6 @@ final authRepositoryProvider = Provider<AuthRepository>((ref) {
     cryptoService: ref.watch(cryptoServiceProvider),
     storageService: ref.watch(secureStorageServiceProvider),
     passkeyService: ref.watch(passkeyServiceProvider),
+    totpService: ref.watch(totpServiceProvider),
   );
 });

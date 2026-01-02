@@ -102,3 +102,40 @@ class PasskeyException extends AuthException {
   const PasskeyException([String message = 'Passkey operation failed'])
     : super(message);
 }
+
+/// Thrown when 2FA is required to complete login.
+class TwoFactorRequiredException extends AuthException {
+  const TwoFactorRequiredException({
+    required this.sessionTicket,
+    String message = 'Two-factor authentication required',
+  }) : super(message);
+
+  final String sessionTicket;
+}
+
+/// Thrown when TOTP code is invalid.
+class InvalidTotpCodeException extends AuthException {
+  const InvalidTotpCodeException([String message = 'Invalid verification code'])
+    : super(message);
+}
+
+/// Thrown when recovery code is invalid.
+class InvalidRecoveryCodeException extends AuthException {
+  const InvalidRecoveryCodeException([
+    String message = 'Invalid recovery code',
+  ]) : super(message);
+}
+
+/// Thrown when session ticket has expired.
+class SessionTicketExpiredException extends AuthException {
+  const SessionTicketExpiredException([
+    String message = 'Session expired, please try again',
+  ]) : super(message);
+}
+
+/// Thrown when too many 2FA attempts have been made.
+class TooManyAttemptsException extends AuthException {
+  const TooManyAttemptsException([
+    String message = 'Too many attempts, please try again later',
+  ]) : super(message);
+}

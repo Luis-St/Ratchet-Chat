@@ -182,6 +182,108 @@ class ApiService {
     }, includeAuth: true);
   }
 
+  // ============== PASSWORD + 2FA LOGIN ENDPOINTS ==============
+
+  /// Starts password login flow with 2FA support.
+  /// Returns OPAQUE response.
+  Future<Map<String, dynamic>> passwordLoginStart({
+    required String username,
+    required String opaqueRequest,
+  }) async {
+    return post('/auth/password/login/start', {
+      'username': username,
+      'opaque_request': opaqueRequest,
+    }, includeAuth: false);
+  }
+
+  /// Finishes password login flow with 2FA support.
+  /// Returns either:
+  /// - { requires_2fa: true, session_ticket: "..." } if 2FA is enabled
+  /// - { token: "...", keys: {...} } if 2FA is not enabled
+  Future<Map<String, dynamic>> passwordLoginFinish({
+    required String username,
+    required String opaqueFinish,
+  }) async {
+    return post('/auth/password/login/finish', {
+      'username': username,
+      'opaque_finish': opaqueFinish,
+    }, includeAuth: false);
+  }
+
+  /// Verifies TOTP code during password + 2FA login.
+  /// Returns { token: "...", keys: {...} }.
+  Future<Map<String, dynamic>> verifyTotp({
+    required String sessionTicket,
+    required String totpCode,
+  }) async {
+    return post('/auth/password/login/totp', {
+      'session_ticket': sessionTicket,
+      'totp_code': totpCode,
+    }, includeAuth: false);
+  }
+
+  /// Verifies recovery code during password + 2FA login.
+  /// Returns { token: "...", keys: {...}, remaining_recovery_codes: n }.
+  Future<Map<String, dynamic>> verifyRecoveryCode({
+    required String sessionTicket,
+    required String recoveryCode,
+  }) async {
+    return post('/auth/password/login/recovery', {
+      'session_ticket': sessionTicket,
+      'recovery_code': recoveryCode,
+    }, includeAuth: false);
+  }
+
+  // ============== PASSWORD + 2FA REGISTRATION ENDPOINTS ==============
+
+  /// Starts password+2FA registration flow.
+  /// Returns OPAQUE response and handle.
+  Future<Map<String, dynamic>> passwordRegisterStart({
+    required String username,
+    required String opaqueRequest,
+  }) async {
+    return post('/auth/password/register/start', {
+      'username': username,
+      'opaque_request': opaqueRequest,
+    }, includeAuth: false);
+  }
+
+  /// Finishes password+2FA registration flow with TOTP setup.
+  /// Returns { recovery_codes: [...] }.
+  Future<Map<String, dynamic>> passwordRegisterFinish({
+    required String username,
+    required String opaqueFinish,
+    required String kdfSalt,
+    required int kdfIterations,
+    required String publicIdentityKey,
+    required String publicTransportKey,
+    required String encryptedIdentityKey,
+    required String encryptedIdentityIv,
+    required String encryptedTransportKey,
+    required String encryptedTransportIv,
+    required String totpSecret,
+    required String encryptedTotpSecret,
+    required String encryptedTotpSecretIv,
+    required String totpCode,
+  }) async {
+    return post('/auth/password/register/finish', {
+      'username': username,
+      'opaque_finish': opaqueFinish,
+      'kdf_salt': kdfSalt,
+      'kdf_iterations': kdfIterations,
+      'public_identity_key': publicIdentityKey,
+      'public_transport_key': publicTransportKey,
+      'encrypted_identity_key': encryptedIdentityKey,
+      'encrypted_identity_iv': encryptedIdentityIv,
+      'encrypted_transport_key': encryptedTransportKey,
+      'encrypted_transport_iv': encryptedTransportIv,
+      'totp_secret': totpSecret,
+      'encrypted_totp_secret': encryptedTotpSecret,
+      'encrypted_totp_secret_iv': encryptedTotpSecretIv,
+      'totp_code': totpCode,
+    }, includeAuth: false);
+  }
+
   /// Validates that a URL points to a valid Ratchet Chat server.
   Future<bool> validateServer(String url) async {
     try {

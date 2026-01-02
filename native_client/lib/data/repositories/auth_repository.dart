@@ -5,12 +5,15 @@ import 'package:passkeys/types.dart';
 
 import '../../core/errors/auth_exceptions.dart';
 import '../models/kdf_params.dart';
+import '../models/pending_2fa_login.dart';
+import '../models/pending_registration.dart';
 import '../models/user_session.dart';
 import '../services/api_service.dart';
 import '../services/crypto_service.dart';
 import '../services/opaque_service.dart';
 import '../services/passkey_service.dart';
 import '../services/secure_storage_service.dart';
+import '../services/totp_service.dart';
 
 /// Response from login finish endpoint.
 class LoginResponse {
@@ -28,17 +31,20 @@ class AuthRepository {
     required CryptoService cryptoService,
     required SecureStorageService storageService,
     required PasskeyService passkeyService,
+    required TotpService totpService,
   }) : _apiService = apiService,
        _opaqueService = opaqueService,
        _cryptoService = cryptoService,
        _storageService = storageService,
-       _passkeyService = passkeyService;
+       _passkeyService = passkeyService,
+       _totpService = totpService;
 
   final ApiService _apiService;
   final OpaqueService _opaqueService;
   final CryptoService _cryptoService;
   final SecureStorageService _storageService;
   final PasskeyService _passkeyService;
+  final TotpService _totpService;
 
   /// Checks if passkeys are supported on the current platform.
   bool get isPasskeySupported => _passkeyService.isSupported;
@@ -519,5 +525,282 @@ class AuthRepository {
     } catch (e) {
       throw const DecryptionException('Invalid password');
     }
+  }
+
+  // ============== PASSWORD + 2FA LOGIN METHODS ==============
+
+  /// Performs the password + 2FA login flow.
+  ///
+  /// Returns either:
+  /// - A [Pending2faLogin] if 2FA is required
+  /// - A [UserSession] if 2FA is not required (no 2FA enabled on account)
+  Future<({Pending2faLogin? pending2fa, UserSession? session})> loginWithPassword({
+    required String username,
+    required String password,
+  }) async {
+    // Step 1: Get KDF parameters
+    final kdfParams = await getKdfParams(username);
+
+    // Step 2: Start OPAQUE login
+    final loginStart = _opaqueService.loginStart(password);
+    final startResponse = await _apiService.passwordLoginStart(
+      username: username,
+      opaqueRequest: base64Encode(loginStart.request),
+    );
+
+    // Step 3: Finish OPAQUE login
+    final serverKe2 = base64Decode(startResponse['opaque_response'] as String);
+    final loginFinish = _opaqueService.loginFinish(
+      loginStart.client,
+      Uint8List.fromList(serverKe2),
+    );
+
+    final finishResponse = await _apiService.passwordLoginFinish(
+      username: username,
+      opaqueFinish: base64Encode(loginFinish.finishRequest),
+    );
+
+    // Step 4: Check if 2FA is required
+    final requires2fa = finishResponse['requires_2fa'] as bool? ?? false;
+    final serverHost = Uri.parse(_apiService.baseUrl!).host;
+    final handle = '$username@$serverHost';
+
+    if (requires2fa) {
+      // Return pending 2FA login with session ticket
+      final sessionTicket = finishResponse['session_ticket'] as String;
+      return (
+        pending2fa: Pending2faLogin(
+          username: username,
+          handle: handle,
+          sessionTicket: sessionTicket,
+          kdfSalt: kdfParams.salt,
+          kdfIterations: kdfParams.iterations,
+          expiresAt: DateTime.now().add(const Duration(minutes: 5)),
+        ),
+        session: null,
+      );
+    } else {
+      // No 2FA, return session directly
+      final session = _buildSessionFromResponse(
+        username: username,
+        handle: handle,
+        kdfSalt: kdfParams.salt,
+        kdfIterations: kdfParams.iterations,
+        response: finishResponse,
+      );
+      return (pending2fa: null, session: session);
+    }
+  }
+
+  /// Verifies a TOTP code during password + 2FA login.
+  ///
+  /// Returns the [UserSession] if verification succeeds.
+  Future<UserSession> verifyTotp({
+    required Pending2faLogin pendingLogin,
+    required String totpCode,
+  }) async {
+    if (pendingLogin.isExpired) {
+      throw const SessionTicketExpiredException();
+    }
+
+    final response = await _apiService.verifyTotp(
+      sessionTicket: pendingLogin.sessionTicket,
+      totpCode: totpCode,
+    );
+
+    return _buildSessionFromResponse(
+      username: pendingLogin.username,
+      handle: pendingLogin.handle,
+      kdfSalt: pendingLogin.kdfSalt,
+      kdfIterations: pendingLogin.kdfIterations,
+      response: response,
+    );
+  }
+
+  /// Verifies a recovery code during password + 2FA login.
+  ///
+  /// Returns the [UserSession] and remaining recovery codes count.
+  Future<({UserSession session, int remainingCodes})> verifyRecoveryCode({
+    required Pending2faLogin pendingLogin,
+    required String recoveryCode,
+  }) async {
+    if (pendingLogin.isExpired) {
+      throw const SessionTicketExpiredException();
+    }
+
+    final response = await _apiService.verifyRecoveryCode(
+      sessionTicket: pendingLogin.sessionTicket,
+      recoveryCode: recoveryCode,
+    );
+
+    final session = _buildSessionFromResponse(
+      username: pendingLogin.username,
+      handle: pendingLogin.handle,
+      kdfSalt: pendingLogin.kdfSalt,
+      kdfIterations: pendingLogin.kdfIterations,
+      response: response,
+    );
+
+    final remainingCodes = response['remaining_recovery_codes'] as int? ?? 0;
+
+    return (session: session, remainingCodes: remainingCodes);
+  }
+
+  /// Builds a [UserSession] from the server response after successful auth.
+  UserSession _buildSessionFromResponse({
+    required String username,
+    required String handle,
+    required String kdfSalt,
+    required int kdfIterations,
+    required Map<String, dynamic> response,
+  }) {
+    final token = response['token'] as String;
+    final keys = response['keys'] as Map<String, dynamic>;
+    final userId = _parseJwtSubject(token);
+
+    return UserSession(
+      token: token,
+      userId: userId,
+      username: username,
+      handle: handle,
+      kdfSalt: keys['kdf_salt'] as String? ?? kdfSalt,
+      kdfIterations: keys['kdf_iterations'] as int? ?? kdfIterations,
+      encryptedIdentityKey: EncryptedPayload(
+        ciphertext: keys['encrypted_identity_key'] as String,
+        iv: keys['encrypted_identity_iv'] as String,
+      ),
+      encryptedTransportKey: EncryptedPayload(
+        ciphertext: keys['encrypted_transport_key'] as String,
+        iv: keys['encrypted_transport_iv'] as String,
+      ),
+      publicIdentityKey: keys['public_identity_key'] as String,
+      publicTransportKey: keys['public_transport_key'] as String,
+    );
+  }
+
+  /// Saves a session and optionally the master key.
+  Future<void> saveSession({
+    required UserSession session,
+    required Uint8List masterKey,
+    required bool savePassword,
+  }) async {
+    await _storageService.saveSession(session);
+    _apiService.setToken(session.token);
+
+    if (savePassword) {
+      await _storageService.saveMasterKey(_cryptoService.exportKey(masterKey));
+    }
+  }
+
+  // ============== PASSWORD + 2FA REGISTRATION METHODS ==============
+
+  /// Starts the password+2FA registration flow.
+  ///
+  /// Returns a [PendingRegistration] containing all the data needed
+  /// for the TOTP setup screen (QR code, secret, etc.).
+  Future<PendingRegistration> registerWithPasswordStart({
+    required String username,
+    required String password,
+  }) async {
+    // Step 1: Generate KDF parameters
+    final kdfSalt = base64Encode(_cryptoService.generateSalt());
+    const kdfIterations = 310000;
+
+    // Step 2: Derive master key from password
+    final masterKey = _cryptoService.deriveMasterKey(
+      password: password,
+      saltBase64: kdfSalt,
+      iterations: kdfIterations,
+    );
+
+    // Step 3: Generate key pairs (placeholder - actual implementation would use ML-DSA and ML-KEM)
+    final identityPrivateKey = _cryptoService.generateSalt(64);
+    final transportPrivateKey = _cryptoService.generateSalt(64);
+    final publicIdentityKey = _cryptoService.generateSalt(32);
+    final publicTransportKey = _cryptoService.generateSalt(32);
+
+    // Step 4: Encrypt private keys with master key
+    final encryptedIdentityKey = _cryptoService.encrypt(identityPrivateKey, masterKey);
+    final encryptedTransportKey = _cryptoService.encrypt(transportPrivateKey, masterKey);
+
+    // Step 5: Generate TOTP secret and encrypt it
+    final totpSecret = _totpService.generateSecret();
+    final totpSecretBytes = Uint8List.fromList(totpSecret.codeUnits);
+    final encryptedTotpSecret = _cryptoService.encrypt(totpSecretBytes, masterKey);
+
+    // Step 6: Start OPAQUE registration
+    final regStart = _opaqueService.registerStart(password);
+    final startResponse = await _apiService.passwordRegisterStart(
+      username: username,
+      opaqueRequest: base64Encode(regStart.request),
+    );
+
+    // Step 7: Get handle from response
+    final handle = startResponse['handle'] as String;
+
+    // Step 8: Finish OPAQUE registration (get record but don't send yet)
+    final serverResponse = base64Decode(startResponse['opaque_response'] as String);
+    final registrationRecord = _opaqueService.registerFinish(
+      regStart.client,
+      Uint8List.fromList(serverResponse),
+    );
+
+    // Step 9: Generate TOTP URI for QR code
+    final serverHost = Uri.parse(_apiService.baseUrl!).host;
+    final totpUri = _totpService.getTotpUri(
+      secret: totpSecret,
+      username: '$username@$serverHost',
+      issuer: 'Ratchet Chat',
+    );
+
+    return PendingRegistration(
+      username: username,
+      handle: handle,
+      password: password,
+      kdfSalt: kdfSalt,
+      kdfIterations: kdfIterations,
+      masterKey: masterKey,
+      opaqueFinish: base64Encode(registrationRecord),
+      totpSecret: totpSecret,
+      totpUri: totpUri,
+      encryptedIdentityKey: encryptedIdentityKey,
+      encryptedTransportKey: encryptedTransportKey,
+      encryptedTotpSecret: encryptedTotpSecret,
+      publicIdentityKey: base64Encode(publicIdentityKey),
+      publicTransportKey: base64Encode(publicTransportKey),
+    );
+  }
+
+  /// Completes the password+2FA registration flow after TOTP verification.
+  ///
+  /// Returns the list of recovery codes from the server.
+  Future<List<String>> registerWithPasswordFinish({
+    required PendingRegistration pending,
+    required String totpCode,
+  }) async {
+    // Send the finish request with TOTP code
+    final response = await _apiService.passwordRegisterFinish(
+      username: pending.username,
+      opaqueFinish: pending.opaqueFinish,
+      kdfSalt: pending.kdfSalt,
+      kdfIterations: pending.kdfIterations,
+      publicIdentityKey: pending.publicIdentityKey,
+      publicTransportKey: pending.publicTransportKey,
+      encryptedIdentityKey: pending.encryptedIdentityKey.ciphertext,
+      encryptedIdentityIv: pending.encryptedIdentityKey.iv,
+      encryptedTransportKey: pending.encryptedTransportKey.ciphertext,
+      encryptedTransportIv: pending.encryptedTransportKey.iv,
+      totpSecret: pending.totpSecret,
+      encryptedTotpSecret: pending.encryptedTotpSecret.ciphertext,
+      encryptedTotpSecretIv: pending.encryptedTotpSecret.iv,
+      totpCode: totpCode,
+    );
+
+    // Extract recovery codes from response
+    final recoveryCodes = (response['recovery_codes'] as List<dynamic>)
+        .map((code) => code as String)
+        .toList();
+
+    return recoveryCodes;
   }
 }

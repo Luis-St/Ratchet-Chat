@@ -6,6 +6,12 @@ import '../../providers/auth_provider.dart';
 import '../../providers/server_provider.dart';
 import '../../routing/app_router.dart';
 
+/// Registration method options.
+enum RegistrationMethod {
+  passkey,
+  password2fa,
+}
+
 /// Screen for user login and registration.
 class LoginScreen extends ConsumerStatefulWidget {
     const LoginScreen({super.key});
@@ -23,8 +29,10 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
     bool _savePassword = false;
     bool _obscurePassword = true;
     bool _obscureConfirmPassword = true;
+    RegistrationMethod _registrationMethod = RegistrationMethod.passkey;
 
     bool get _isRegisterMode => _tabController.index == 1;
+    bool get _isPasskeyRegistration => _registrationMethod == RegistrationMethod.passkey;
 
     @override
     void initState() {
@@ -55,17 +63,16 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
         final authNotifier = ref.read(authProvider.notifier);
 
         if (_isRegisterMode) {
-            // Use passkey registration when supported
-            if (authNotifier.isPasskeySupported) {
+            if (_isPasskeyRegistration && authNotifier.isPasskeySupported) {
+                // Passkey registration
                 await authNotifier.registerWithPasskey(
                     username: _usernameController.text.trim(),
                     password: _passwordController.text,
                     savePassword: _savePassword,
                 );
             } else {
-                // Fallback to OPAQUE-only registration (shouldn't happen since
-                // the screen shows "not supported" on unsupported platforms)
-                await authNotifier.register(
+                // Password + 2FA registration
+                await authNotifier.registerWithPassword(
                     username: _usernameController.text.trim(),
                     password: _passwordController.text,
                     savePassword: _savePassword,
@@ -103,57 +110,11 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
         final isLoading = authState.isLoading;
         final passkeySupported = authNotifier.isPasskeySupported;
 
-        // Show "not supported" screen for unsupported platforms (Linux)
-        if (!passkeySupported) {
-            return Scaffold(
-                body: SafeArea(
-                    child: Center(
-                        child: Padding(
-                            padding: const EdgeInsets.all(24),
-                            child: Column(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                    Icon(
-                                        Icons.block,
-                                        size: 80,
-                                        color: theme.colorScheme.outline,
-                                    ),
-                                    const SizedBox(height: 24),
-                                    Text(
-                                        'Platform Not Supported',
-                                        style: theme.textTheme.headlineSmall?.copyWith(
-                                            fontWeight: FontWeight.bold,
-                                        ),
-                                        textAlign: TextAlign.center,
-                                    ),
-                                    const SizedBox(height: 16),
-                                    Text(
-                                        'Passkey authentication is not available on this platform.\n\nPlease use Windows, macOS, iOS, or Android.',
-                                        style: theme.textTheme.bodyLarge?.copyWith(
-                                            color: theme.colorScheme.onSurfaceVariant,
-                                        ),
-                                        textAlign: TextAlign.center,
-                                    ),
-                                    const SizedBox(height: 32),
-                                    if (serverState.activeServer != null) ...[
-                                        Text(
-                                            'Connected to: ${serverState.activeServer!.displayName}',
-                                            style: theme.textTheme.bodySmall?.copyWith(
-                                                color: theme.colorScheme.outline,
-                                            ),
-                                        ),
-                                        const SizedBox(height: 16),
-                                        OutlinedButton(
-                                            onPressed: _changeServer,
-                                            child: const Text('Change Server'),
-                                        ),
-                                    ],
-                                ],
-                            ),
-                        ),
-                    ),
-                ),
-            );
+        // If passkey not supported and in register mode, force password+2FA method
+        if (_isRegisterMode && !passkeySupported && _registrationMethod == RegistrationMethod.passkey) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+                setState(() => _registrationMethod = RegistrationMethod.password2fa);
+            });
         }
 
         return Scaffold(
@@ -243,6 +204,35 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
                                         ),
                                     ),
                                     const SizedBox(height: 24),
+
+                                    // Registration method selector (only in Register mode when passkey is supported)
+                                    if (_isRegisterMode && passkeySupported) ...[
+                                        SegmentedButton<RegistrationMethod>(
+                                            segments: const [
+                                                ButtonSegment(
+                                                    value: RegistrationMethod.passkey,
+                                                    label: Text('Passkey'),
+                                                    icon: Icon(Icons.fingerprint),
+                                                ),
+                                                ButtonSegment(
+                                                    value: RegistrationMethod.password2fa,
+                                                    label: Text('Password + 2FA'),
+                                                    icon: Icon(Icons.security),
+                                                ),
+                                            ],
+                                            selected: {_registrationMethod},
+                                            onSelectionChanged: isLoading
+                                                ? null
+                                                : (Set<RegistrationMethod> selection) {
+                                                    setState(() {
+                                                        _registrationMethod = selection.first;
+                                                    });
+                                                    _formKey.currentState?.reset();
+                                                    ref.read(authProvider.notifier).clearError();
+                                                },
+                                        ),
+                                        const SizedBox(height: 24),
+                                    ],
 
                                     // Form
                                     Form(
@@ -408,8 +398,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
                                                     ),
                                                 ),
 
-                                                // Passkey login button (only in Login tab)
-                                                if (!_isRegisterMode) ...[
+                                                // Passkey login button (only in Login tab and on supported platforms)
+                                                if (!_isRegisterMode && passkeySupported) ...[
                                                     const SizedBox(height: 24),
                                                     Row(
                                                         children: [
