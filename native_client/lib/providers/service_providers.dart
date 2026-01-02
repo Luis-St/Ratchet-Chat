@@ -5,6 +5,7 @@ import '../data/repositories/server_repository.dart';
 import '../data/services/api_service.dart';
 import '../data/services/crypto_service.dart';
 import '../data/services/opaque_service.dart';
+import '../data/services/passkey_service.dart';
 import '../data/services/secure_storage_service.dart';
 
 /// Provider for the secure storage service.
@@ -27,6 +28,11 @@ final cryptoServiceProvider = Provider<CryptoService>((ref) {
   return CryptoService();
 });
 
+/// Provider for the passkey service.
+final passkeyServiceProvider = Provider<PasskeyService>((ref) {
+  return PasskeyService();
+});
+
 /// Provider for the server repository.
 final serverRepositoryProvider = Provider<ServerRepository>((ref) {
   return ServerRepository(
@@ -42,5 +48,6 @@ final authRepositoryProvider = Provider<AuthRepository>((ref) {
     opaqueService: ref.watch(opaqueServiceProvider),
     cryptoService: ref.watch(cryptoServiceProvider),
     storageService: ref.watch(secureStorageServiceProvider),
+    passkeyService: ref.watch(passkeyServiceProvider),
   );
 });

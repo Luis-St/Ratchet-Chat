@@ -54,6 +54,9 @@ dependencies:
   # Routing
   go_router: ^14.8.1
 
+  # Passkey/WebAuthn authentication
+  passkeys: ^2.0.4
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

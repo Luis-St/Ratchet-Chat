@@ -21,12 +21,16 @@ class AuthNotifier extends StateNotifier<AuthState> {
 
   UserSession? _session;
   DecryptedKeys? _decryptedKeys;
+  bool _loggedInWithPasskey = false;
 
   /// Gets the current session.
   UserSession? get session => _session;
 
   /// Gets the decrypted keys (only available when authenticated).
   DecryptedKeys? get decryptedKeys => _decryptedKeys;
+
+  /// Whether passkeys are supported on this platform.
+  bool get isPasskeySupported => _authRepository.isPasskeySupported;
 
   Future<void> _init() async {
     try {
@@ -136,7 +140,11 @@ class AuthNotifier extends StateNotifier<AuthState> {
   }
 
   /// Unlocks the session with the password.
-  Future<void> unlock(String password) async {
+  ///
+  /// If the user logged in with passkey, this will verify the password
+  /// using OPAQUE unlock endpoints. Otherwise, it will just decrypt
+  /// the keys locally.
+  Future<void> unlock(String password, {bool savePassword = false}) async {
     if (_session == null) {
       state = const AuthState.guest(error: 'No session to unlock');
       return;
@@ -145,12 +153,25 @@ class AuthNotifier extends StateNotifier<AuthState> {
     state = const AuthState.loading();
 
     try {
-      final decryptedKeys = await _authRepository.unlock(
-        password: password,
-        session: _session!,
-      );
+      DecryptedKeys decryptedKeys;
+
+      if (_loggedInWithPasskey) {
+        // User logged in with passkey, verify password via OPAQUE
+        decryptedKeys = await _authRepository.unlockWithOpaqueVerification(
+          password: password,
+          session: _session!,
+          savePassword: savePassword,
+        );
+      } else {
+        // Regular unlock, just decrypt keys locally
+        decryptedKeys = await _authRepository.unlock(
+          password: password,
+          session: _session!,
+        );
+      }
 
       _decryptedKeys = decryptedKeys;
+      _loggedInWithPasskey = false; // Reset flag
 
       state = AuthState.authenticated(
         userId: _session!.userId,
@@ -163,12 +184,95 @@ class AuthNotifier extends StateNotifier<AuthState> {
         username: _session!.username,
         handle: _session!.handle,
       ).copyWith(error: e.message);
+    } on InvalidCredentialsException catch (e) {
+      state = AuthState.locked(
+        userId: _session!.userId,
+        username: _session!.username,
+        handle: _session!.handle,
+      ).copyWith(error: e.message);
     } catch (e) {
       state = AuthState.locked(
         userId: _session!.userId,
         username: _session!.username,
         handle: _session!.handle,
       ).copyWith(error: 'Unlock failed: ${e.toString()}');
+    }
+  }
+
+  /// Logs in using passkey only.
+  ///
+  /// After successful passkey login, the user will be in a "locked" state
+  /// and must enter their password to decrypt the private keys.
+  Future<void> loginWithPasskey() async {
+    state = const AuthState.loading();
+
+    try {
+      final session = await _authRepository.loginWithPasskey();
+
+      _session = session;
+      _loggedInWithPasskey = true;
+
+      state = AuthState.locked(
+        userId: session.userId,
+        username: session.username,
+        handle: session.handle,
+      );
+    } on AuthException catch (e) {
+      state = AuthState.guest(error: e.message);
+    } catch (e) {
+      state = AuthState.guest(error: 'Passkey login failed: ${e.toString()}');
+    }
+  }
+
+  /// Registers a new user with passkey.
+  ///
+  /// This creates a passkey credential along with OPAQUE password authentication.
+  Future<void> registerWithPasskey({
+    required String username,
+    required String password,
+    required bool savePassword,
+  }) async {
+    state = const AuthState.loading();
+
+    try {
+      final session = await _authRepository.registerWithPasskey(
+        username: username,
+        password: password,
+        savePassword: savePassword,
+      );
+
+      _session = session;
+
+      // Derive master key and decrypt keys
+      final masterKey = _cryptoService.deriveMasterKey(
+        password: password,
+        saltBase64: session.kdfSalt,
+        iterations: session.kdfIterations,
+      );
+
+      final identityKey = _cryptoService.decrypt(
+        session.encryptedIdentityKey,
+        masterKey,
+      );
+      final transportKey = _cryptoService.decrypt(
+        session.encryptedTransportKey,
+        masterKey,
+      );
+
+      _decryptedKeys = DecryptedKeys(
+        identityPrivateKey: identityKey,
+        transportPrivateKey: transportKey,
+      );
+
+      state = AuthState.authenticated(
+        userId: session.userId,
+        username: session.username,
+        handle: session.handle,
+      );
+    } on AuthException catch (e) {
+      state = AuthState.guest(error: e.message);
+    } catch (e) {
+      state = AuthState.guest(error: 'Registration failed: ${e.toString()}');
     }
   }
 
@@ -227,6 +331,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
     await _authRepository.logout();
     _session = null;
     _decryptedKeys = null;
+    _loggedInWithPasskey = false;
     state = const AuthState.guest();
   }
 

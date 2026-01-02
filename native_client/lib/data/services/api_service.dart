@@ -102,6 +102,86 @@ class ApiService {
     }
   }
 
+  // ============== PASSKEY ENDPOINTS ==============
+
+  /// Starts passkey registration flow.
+  /// Returns passkey creation options and OPAQUE response.
+  Future<Map<String, dynamic>> passkeyRegisterStart({
+    required String username,
+    required String opaqueRequest,
+  }) async {
+    return post('/auth/passkey/register/start', {
+      'username': username,
+      'opaque_request': opaqueRequest,
+    }, includeAuth: false);
+  }
+
+  /// Finishes passkey registration flow.
+  /// Returns token, user info, and encrypted keys.
+  Future<Map<String, dynamic>> passkeyRegisterFinish({
+    required String username,
+    required String opaqueFinish,
+    required Map<String, dynamic> passkeyResponse,
+    required String kdfSalt,
+    required int kdfIterations,
+    required String publicIdentityKey,
+    required String publicTransportKey,
+    required String encryptedIdentityKey,
+    required String encryptedIdentityIv,
+    required String encryptedTransportKey,
+    required String encryptedTransportIv,
+  }) async {
+    return post('/auth/passkey/register/finish', {
+      'username': username,
+      'opaque_finish': opaqueFinish,
+      'passkey_response': passkeyResponse,
+      'kdf_salt': kdfSalt,
+      'kdf_iterations': kdfIterations,
+      'public_identity_key': publicIdentityKey,
+      'public_transport_key': publicTransportKey,
+      'encrypted_identity_key': encryptedIdentityKey,
+      'encrypted_identity_iv': encryptedIdentityIv,
+      'encrypted_transport_key': encryptedTransportKey,
+      'encrypted_transport_iv': encryptedTransportIv,
+    }, includeAuth: false);
+  }
+
+  /// Gets passkey login options (assertion challenge).
+  Future<Map<String, dynamic>> passkeyLoginOptions() async {
+    return post('/auth/passkey/login/options', {}, includeAuth: false);
+  }
+
+  /// Finishes passkey login flow.
+  /// Returns token, user info, and encrypted keys.
+  Future<Map<String, dynamic>> passkeyLoginFinish({
+    required Map<String, dynamic> response,
+  }) async {
+    return post('/auth/passkey/login/finish', {
+      'response': response,
+    }, includeAuth: false);
+  }
+
+  // ============== OPAQUE UNLOCK ENDPOINTS ==============
+
+  /// Starts OPAQUE unlock flow (requires valid JWT).
+  /// Used after passkey login to verify password.
+  Future<Map<String, dynamic>> opaqueUnlockStart({
+    required String request,
+  }) async {
+    return post('/auth/opaque/unlock/start', {
+      'request': request,
+    }, includeAuth: true);
+  }
+
+  /// Finishes OPAQUE unlock flow (requires valid JWT).
+  Future<Map<String, dynamic>> opaqueUnlockFinish({
+    required String finish,
+  }) async {
+    return post('/auth/opaque/unlock/finish', {
+      'finish': finish,
+    }, includeAuth: true);
+  }
+
   /// Validates that a URL points to a valid Ratchet Chat server.
   Future<bool> validateServer(String url) async {
     try {

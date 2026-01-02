@@ -15,6 +15,7 @@ class _LockScreenState extends ConsumerState<LockScreen> {
   final _formKey = GlobalKey<FormState>();
   final _passwordController = TextEditingController();
   bool _obscurePassword = true;
+  bool _savePassword = false;
 
   @override
   void dispose() {
@@ -25,7 +26,10 @@ class _LockScreenState extends ConsumerState<LockScreen> {
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
 
-    await ref.read(authProvider.notifier).unlock(_passwordController.text);
+    await ref.read(authProvider.notifier).unlock(
+      _passwordController.text,
+      savePassword: _savePassword,
+    );
   }
 
   Future<void> _logout() async {
@@ -126,6 +130,18 @@ class _LockScreenState extends ConsumerState<LockScreen> {
                         return null;
                       },
                       onFieldSubmitted: (_) => _submit(),
+                    ),
+                    const SizedBox(height: 8),
+
+                    // Remember password checkbox
+                    CheckboxListTile(
+                      value: _savePassword,
+                      onChanged: isLoading
+                          ? null
+                          : (value) => setState(() => _savePassword = value!),
+                      title: const Text('Remember password on this device'),
+                      controlAffinity: ListTileControlAffinity.leading,
+                      contentPadding: EdgeInsets.zero,
                     ),
 
                     // Error message
