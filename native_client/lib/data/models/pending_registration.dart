@@ -11,7 +11,7 @@ class PendingRegistration {
   const PendingRegistration({
     required this.username,
     required this.handle,
-    required this.password,
+    required this.accountPassword,
     required this.kdfSalt,
     required this.kdfIterations,
     required this.masterKey,
@@ -31,8 +31,9 @@ class PendingRegistration {
   /// The full handle (username@domain) returned from start.
   final String handle;
 
-  /// The password (needed for auto-login after registration).
-  final String password;
+  /// The account password (for OPAQUE server authentication).
+  /// Needed for auto-login after registration completes.
+  final String accountPassword;
 
   /// Salt used for KDF (base64 encoded).
   final String kdfSalt;
