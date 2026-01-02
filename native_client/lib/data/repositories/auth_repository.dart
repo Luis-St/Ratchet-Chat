@@ -696,19 +696,24 @@ class AuthRepository {
 
   /// Starts the password+2FA registration flow.
   ///
+  /// This method follows the web client's two-password design:
+  /// - [accountPassword]: Used for OPAQUE server authentication
+  /// - [masterPassword]: Used for deriving the master key (local encryption)
+  ///
   /// Returns a [PendingRegistration] containing all the data needed
   /// for the TOTP setup screen (QR code, secret, etc.).
   Future<PendingRegistration> registerWithPasswordStart({
     required String username,
-    required String password,
+    required String accountPassword,
+    required String masterPassword,
   }) async {
     // Step 1: Generate KDF parameters
     final kdfSalt = base64Encode(_cryptoService.generateSalt());
     const kdfIterations = 310000;
 
-    // Step 2: Derive master key from password
+    // Step 2: Derive master key from MASTER password (not account password)
     final masterKey = _cryptoService.deriveMasterKey(
-      password: password,
+      password: masterPassword,
       saltBase64: kdfSalt,
       iterations: kdfIterations,
     );
@@ -728,8 +733,8 @@ class AuthRepository {
     final totpSecretBytes = Uint8List.fromList(totpSecret.codeUnits);
     final encryptedTotpSecret = _cryptoService.encrypt(totpSecretBytes, masterKey);
 
-    // Step 6: Start OPAQUE registration
-    final regStart = _opaqueService.registerStart(password);
+    // Step 6: Start OPAQUE registration with ACCOUNT password
+    final regStart = _opaqueService.registerStart(accountPassword);
     final startResponse = await _apiService.passwordRegisterStart(
       username: username,
       opaqueRequest: base64Encode(regStart.request),
@@ -756,7 +761,7 @@ class AuthRepository {
     return PendingRegistration(
       username: username,
       handle: handle,
-      password: password,
+      accountPassword: accountPassword,
       kdfSalt: kdfSalt,
       kdfIterations: kdfIterations,
       masterKey: masterKey,

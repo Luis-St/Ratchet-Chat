@@ -91,7 +91,7 @@ class _LockScreenState extends ConsumerState<LockScreen> {
                     ],
                     const SizedBox(height: 8),
                     Text(
-                      'Enter your password to unlock',
+                      'Enter your master password to unlock',
                       style: theme.textTheme.bodyMedium?.copyWith(
                         color: theme.colorScheme.onSurfaceVariant,
                       ),
@@ -103,8 +103,8 @@ class _LockScreenState extends ConsumerState<LockScreen> {
                     TextFormField(
                       controller: _passwordController,
                       decoration: InputDecoration(
-                        labelText: 'Password',
-                        prefixIcon: const Icon(Icons.lock_outline),
+                        labelText: 'Master Password',
+                        prefixIcon: const Icon(Icons.key_outlined),
                         border: const OutlineInputBorder(),
                         suffixIcon: IconButton(
                           icon: Icon(

@@ -93,8 +93,16 @@ class _MasterPasswordScreenState extends ConsumerState<MasterPasswordScreen> {
 
                   // Instructions
                   Text(
-                    'Enter your password to unlock your account',
+                    'Enter your master password to unlock your account',
                     style: theme.textTheme.bodyLarge?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Your master password decrypts your private keys locally.',
+                    style: theme.textTheme.bodySmall?.copyWith(
                       color: theme.colorScheme.onSurfaceVariant,
                     ),
                     textAlign: TextAlign.center,
@@ -140,8 +148,8 @@ class _MasterPasswordScreenState extends ConsumerState<MasterPasswordScreen> {
                         TextFormField(
                           controller: _passwordController,
                           decoration: InputDecoration(
-                            labelText: 'Password',
-                            prefixIcon: const Icon(Icons.lock_outline),
+                            labelText: 'Master Password',
+                            prefixIcon: const Icon(Icons.key_outlined),
                             border: const OutlineInputBorder(),
                             suffixIcon: IconButton(
                               icon: Icon(

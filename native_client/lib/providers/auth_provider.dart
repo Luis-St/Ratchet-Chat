@@ -500,12 +500,17 @@ class AuthNotifier extends StateNotifier<AuthState> {
 
   /// Registers a new user with password and 2FA (TOTP).
   ///
+  /// This follows the web client's two-password design:
+  /// - [accountPassword]: Used for OPAQUE server authentication
+  /// - [masterPassword]: Used for deriving the master key (local encryption)
+  ///
   /// This starts the registration flow by generating keys and TOTP secret,
   /// then transitions to [AuthStatus.awaitingTotpSetup] for the user to
   /// verify their authenticator app.
   Future<void> registerWithPassword({
     required String username,
-    required String password,
+    required String accountPassword,
+    required String masterPassword,
     required bool savePassword,
   }) async {
     state = const AuthState.loading();
@@ -515,7 +520,8 @@ class AuthNotifier extends StateNotifier<AuthState> {
 
       final pending = await _authRepository.registerWithPasswordStart(
         username: username,
-        password: password,
+        accountPassword: accountPassword,
+        masterPassword: masterPassword,
       );
 
       _pendingRegistration = pending;
@@ -573,7 +579,9 @@ class AuthNotifier extends StateNotifier<AuthState> {
   /// Acknowledges the recovery codes and proceeds to login.
   ///
   /// After the user confirms they have saved the recovery codes,
-  /// this method auto-logins with the registered credentials.
+  /// this method auto-logins with the registered credentials using
+  /// the account password (for OPAQUE auth). The master password
+  /// will be prompted separately.
   Future<void> acknowledgeRecoveryCodes() async {
     if (_pendingRegistration == null) {
       state = const AuthState.guest(error: 'No pending registration');
@@ -583,10 +591,10 @@ class AuthNotifier extends StateNotifier<AuthState> {
     state = const AuthState.loading();
 
     try {
-      // Auto-login with the registered credentials
+      // Auto-login with the registered account password (for OPAQUE auth)
       await login(
         username: _pendingRegistration!.username,
-        password: _pendingRegistration!.password,
+        password: _pendingRegistration!.accountPassword,
         savePassword: _pendingSavePassword,
       );
 
