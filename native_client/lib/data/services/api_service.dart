@@ -187,7 +187,7 @@ class ApiService {
     try {
       final response = await _client
           .get(
-            Uri.parse('$url/.well-known/ratchet-chat/federation.json'),
+            Uri.parse('$url/health'),
             headers: {'Accept': 'application/json'},
           )
           .timeout(const Duration(seconds: 10));
