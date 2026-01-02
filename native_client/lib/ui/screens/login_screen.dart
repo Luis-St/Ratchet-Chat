@@ -52,19 +52,36 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
     Future<void> _submit() async {
         if (!_formKey.currentState!.validate()) return;
 
+        final authNotifier = ref.read(authProvider.notifier);
+
         if (_isRegisterMode) {
-            await ref.read(authProvider.notifier).register(
-                username: _usernameController.text.trim(),
-                password: _passwordController.text,
-                savePassword: _savePassword,
-            );
+            // Use passkey registration when supported
+            if (authNotifier.isPasskeySupported) {
+                await authNotifier.registerWithPasskey(
+                    username: _usernameController.text.trim(),
+                    password: _passwordController.text,
+                    savePassword: _savePassword,
+                );
+            } else {
+                // Fallback to OPAQUE-only registration (shouldn't happen since
+                // the screen shows "not supported" on unsupported platforms)
+                await authNotifier.register(
+                    username: _usernameController.text.trim(),
+                    password: _passwordController.text,
+                    savePassword: _savePassword,
+                );
+            }
         } else {
-            await ref.read(authProvider.notifier).login(
+            await authNotifier.login(
                 username: _usernameController.text.trim(),
                 password: _passwordController.text,
                 savePassword: _savePassword,
             );
         }
+    }
+
+    Future<void> _loginWithPasskey() async {
+        await ref.read(authProvider.notifier).loginWithPasskey();
     }
 
     void _changeServer() {
@@ -81,8 +98,63 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
     Widget build(BuildContext context) {
         final authState = ref.watch(authProvider);
         final serverState = ref.watch(serverProvider);
+        final authNotifier = ref.read(authProvider.notifier);
         final theme = Theme.of(context);
         final isLoading = authState.isLoading;
+        final passkeySupported = authNotifier.isPasskeySupported;
+
+        // Show "not supported" screen for unsupported platforms (Linux)
+        if (!passkeySupported) {
+            return Scaffold(
+                body: SafeArea(
+                    child: Center(
+                        child: Padding(
+                            padding: const EdgeInsets.all(24),
+                            child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                    Icon(
+                                        Icons.block,
+                                        size: 80,
+                                        color: theme.colorScheme.outline,
+                                    ),
+                                    const SizedBox(height: 24),
+                                    Text(
+                                        'Platform Not Supported',
+                                        style: theme.textTheme.headlineSmall?.copyWith(
+                                            fontWeight: FontWeight.bold,
+                                        ),
+                                        textAlign: TextAlign.center,
+                                    ),
+                                    const SizedBox(height: 16),
+                                    Text(
+                                        'Passkey authentication is not available on this platform.\n\nPlease use Windows, macOS, iOS, or Android.',
+                                        style: theme.textTheme.bodyLarge?.copyWith(
+                                            color: theme.colorScheme.onSurfaceVariant,
+                                        ),
+                                        textAlign: TextAlign.center,
+                                    ),
+                                    const SizedBox(height: 32),
+                                    if (serverState.activeServer != null) ...[
+                                        Text(
+                                            'Connected to: ${serverState.activeServer!.displayName}',
+                                            style: theme.textTheme.bodySmall?.copyWith(
+                                                color: theme.colorScheme.outline,
+                                            ),
+                                        ),
+                                        const SizedBox(height: 16),
+                                        OutlinedButton(
+                                            onPressed: _changeServer,
+                                            child: const Text('Change Server'),
+                                        ),
+                                    ],
+                                ],
+                            ),
+                        ),
+                    ),
+                ),
+            );
+        }
 
         return Scaffold(
             body: SafeArea(
@@ -335,6 +407,35 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
                                                             : Text(_isRegisterMode ? 'Register' : 'Login'),
                                                     ),
                                                 ),
+
+                                                // Passkey login button (only in Login tab)
+                                                if (!_isRegisterMode) ...[
+                                                    const SizedBox(height: 24),
+                                                    Row(
+                                                        children: [
+                                                            Expanded(child: Divider(color: theme.colorScheme.outline)),
+                                                            Padding(
+                                                                padding: const EdgeInsets.symmetric(horizontal: 16),
+                                                                child: Text(
+                                                                    'or',
+                                                                    style: TextStyle(
+                                                                        color: theme.colorScheme.onSurfaceVariant,
+                                                                    ),
+                                                                ),
+                                                            ),
+                                                            Expanded(child: Divider(color: theme.colorScheme.outline)),
+                                                        ],
+                                                    ),
+                                                    const SizedBox(height: 24),
+                                                    OutlinedButton.icon(
+                                                        onPressed: isLoading ? null : _loginWithPasskey,
+                                                        icon: const Icon(Icons.fingerprint),
+                                                        label: const Padding(
+                                                            padding: EdgeInsets.all(12),
+                                                            child: Text('Sign in with Passkey'),
+                                                        ),
+                                                    ),
+                                                ],
                                             ],
                                         ),
                                     ),

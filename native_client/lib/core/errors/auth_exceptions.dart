@@ -82,3 +82,23 @@ class InvalidUsernameException extends AuthException {
   const InvalidUsernameException([String message = 'Invalid username format'])
     : super(message);
 }
+
+/// Thrown when passkey operation is cancelled by the user.
+class PasskeyCancelledException extends AuthException {
+  const PasskeyCancelledException([
+    String message = 'Passkey authentication was cancelled',
+  ]) : super(message);
+}
+
+/// Thrown when passkeys are not supported on the current platform.
+class PasskeyNotSupportedException extends AuthException {
+  const PasskeyNotSupportedException([
+    String message = 'Passkeys are not supported on this platform',
+  ]) : super(message);
+}
+
+/// Thrown when a passkey operation fails.
+class PasskeyException extends AuthException {
+  const PasskeyException([String message = 'Passkey operation failed'])
+    : super(message);
+}
