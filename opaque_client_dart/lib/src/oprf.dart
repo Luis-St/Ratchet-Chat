@@ -306,13 +306,27 @@ class OprfClient {
     }
   }
 
+  /// Build the HashToGroup DST according to RFC 9497.
+  /// Format: "HashToGroup-" + contextString
+  /// contextString = "OPRFV1-" + I2OSP(mode, 1) + "-" + identifier
+  Uint8List _buildHashToGroupDST() {
+    // For OPRF mode (0x00) with P256-SHA256:
+    // contextString = "OPRFV1-" + 0x00 + "-P256-SHA256"
+    // DST = "HashToGroup-" + contextString
+    const mode = 0x00; // modeOPRF
+    const identifier = 'P256-SHA256';
+    final prefix = 'HashToGroup-OPRFV1-'.codeUnits;
+    final suffix = '-$identifier'.codeUnits;
+    return Uint8List.fromList([...prefix, mode, ...suffix]);
+  }
+
   /// Blind an input.
   BlindResult blind(Uint8List input) {
     // Generate random blind
     final r = P256Oprf.randomScalar();
 
-    // Hash input to curve point
-    final dst = Uint8List.fromList('OPRF-P256-SHA256-SSWU'.codeUnits);
+    // Hash input to curve point using RFC 9497 compliant DST
+    final dst = _buildHashToGroupDST();
     final point = P256Oprf.hashToCurve(input, dst);
 
     // Blind the point: M = r * P
