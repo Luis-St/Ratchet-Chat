@@ -25,7 +25,7 @@ class Labels {
       encodeString('OPAQUE-DeriveKeyPair');
   static final Uint8List oprfKey = encodeString('OprfKey');
   static final Uint8List privateKey = encodeString('PrivateKey');
-  static final Uint8List rfc = encodeString('RFCXXXX');
+  static final Uint8List rfc = encodeString('RFC9497');
   static final Uint8List serverMac = encodeString('ServerMAC');
   static final Uint8List sessionKey = encodeString('SessionKey');
 }
