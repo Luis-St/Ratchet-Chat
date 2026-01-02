@@ -735,8 +735,9 @@ class AuthRepository {
       opaqueRequest: base64Encode(regStart.request),
     );
 
-    // Step 7: Get handle from response
-    final handle = startResponse['handle'] as String;
+    // Step 7: Construct handle from username and server host
+    final serverHost = Uri.parse(_apiService.baseUrl!).host;
+    final handle = '$username@$serverHost';
 
     // Step 8: Finish OPAQUE registration (get record but don't send yet)
     final serverResponse = base64Decode(startResponse['opaque_response'] as String);
@@ -746,7 +747,6 @@ class AuthRepository {
     );
 
     // Step 9: Generate TOTP URI for QR code
-    final serverHost = Uri.parse(_apiService.baseUrl!).host;
     final totpUri = _totpService.getTotpUri(
       secret: totpSecret,
       username: '$username@$serverHost',
