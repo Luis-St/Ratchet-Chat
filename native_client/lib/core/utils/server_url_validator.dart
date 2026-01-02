@@ -73,8 +73,8 @@ class ServerUrlValidator {
     }
   }
 
-  /// Gets the federation endpoint URL for server validation.
-  static String getFederationUrl(String baseUrl) {
-    return '$baseUrl/.well-known/ratchet-chat/federation.json';
+  /// Gets the health endpoint URL for server validation.
+  static String getHealthUrl(String baseUrl) {
+    return '$baseUrl/health';
   }
 }
