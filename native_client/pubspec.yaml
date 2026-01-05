@@ -51,6 +51,9 @@ dependencies:
   # Cryptography
   pointycastle: ^4.0.0
 
+  # Post-Quantum Cryptography (ML-KEM-768, ML-DSA-65)
+  oqs: ^2.2.0
+
   # Routing
   go_router: ^14.8.1
 
