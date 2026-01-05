@@ -176,12 +176,12 @@ class OpaqueCoreClient {
     Uint8List? clientIdentity,
   ) {
     final y = config.oprf.finalize(password, blind, response.evaluation);
+    final hardened = memHard.harden(y);
     final nosalt = Uint8List(config.hash.Nh);
     final randomizedPwd = config.kdf.extract(
       nosalt,
-      joinAll([y, memHard.harden(y)]),
+      joinAll([y, hardened]),
     );
-
     final stored = _store(
       config,
       randomizedPwd,
@@ -221,10 +221,11 @@ class OpaqueCoreClient {
     Uint8List? clientIdentity,
   ) {
     final y = config.oprf.finalize(password, blind, response.evaluation);
+    final hardened = memHard.harden(y);
     final nosalt = Uint8List(config.hash.Nh);
     final randomizedPwd = config.kdf.extract(
       nosalt,
-      joinAll([y, memHard.harden(y)]),
+      joinAll([y, hardened]),
     );
 
     final maskingKey = config.kdf.expand(
