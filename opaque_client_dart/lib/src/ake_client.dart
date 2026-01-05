@@ -44,11 +44,10 @@ class Ake3DHClient {
     }
 
     // Compute Triple-DH IKM
-    final ikm = tripleDhIkm(config, [
-      (sk: _clientSecret!, pk: ke2.authResponse.serverKeyshare),
-      (sk: _clientSecret!, pk: serverPublicKey),
-      (sk: clientPrivateKey, pk: ke2.authResponse.serverKeyshare),
-    ]);
+    final dh1 = ecdhSharedSecret(_clientSecret!, ke2.authResponse.serverKeyshare);
+    final dh2 = ecdhSharedSecret(_clientSecret!, serverPublicKey);
+    final dh3 = ecdhSharedSecret(clientPrivateKey, ke2.authResponse.serverKeyshare);
+    final ikm = joinAll([dh1, dh2, dh3]);
 
     // Build preamble
     final preamble = preambleBuild(

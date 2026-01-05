@@ -25,7 +25,7 @@ class Labels {
       encodeString('OPAQUE-DeriveKeyPair');
   static final Uint8List oprfKey = encodeString('OprfKey');
   static final Uint8List privateKey = encodeString('PrivateKey');
-  static final Uint8List rfc = encodeString('RFC9497');
+  static final Uint8List rfc = encodeString('RFCXXXX');
   static final Uint8List serverMac = encodeString('ServerMAC');
   static final Uint8List sessionKey = encodeString('SessionKey');
 }
@@ -78,6 +78,7 @@ class Ake3DH {
 }
 
 /// Compute ECDH shared secret.
+/// Returns compressed point (33 bytes) to match @cloudflare/opaque-ts.
 Uint8List ecdhSharedSecret(Uint8List privateKey, Uint8List publicKey) {
   final scalar = P256Oprf.deserializeScalar(privateKey);
   final point = P256Oprf.deserializePoint(publicKey);
