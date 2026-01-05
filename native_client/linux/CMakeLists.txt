@@ -126,3 +126,10 @@ if(NOT CMAKE_BUILD_TYPE MATCHES "Debug")
   install(FILES "${AOT_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
     COMPONENT Runtime)
 endif()
+
+# Copy liboqs shared library for post-quantum cryptography
+set(LIBOQS_SO "${CMAKE_CURRENT_SOURCE_DIR}/../bin/linux/liboqs.so")
+if(EXISTS "${LIBOQS_SO}")
+  install(FILES "${LIBOQS_SO}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
+    COMPONENT Runtime)
+endif()

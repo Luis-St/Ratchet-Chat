@@ -12,6 +12,7 @@ import '../services/api_service.dart';
 import '../services/crypto_service.dart';
 import '../services/opaque_service.dart';
 import '../services/passkey_service.dart';
+import '../services/pq_crypto_service.dart';
 import '../services/secure_storage_service.dart';
 import '../services/totp_service.dart';
 
@@ -29,12 +30,14 @@ class AuthRepository {
     required ApiService apiService,
     required OpaqueService opaqueService,
     required CryptoService cryptoService,
+    required PqCryptoService pqCryptoService,
     required SecureStorageService storageService,
     required PasskeyService passkeyService,
     required TotpService totpService,
   }) : _apiService = apiService,
        _opaqueService = opaqueService,
        _cryptoService = cryptoService,
+       _pqCryptoService = pqCryptoService,
        _storageService = storageService,
        _passkeyService = passkeyService,
        _totpService = totpService;
@@ -42,6 +45,7 @@ class AuthRepository {
   final ApiService _apiService;
   final OpaqueService _opaqueService;
   final CryptoService _cryptoService;
+  final PqCryptoService _pqCryptoService;
   final SecureStorageService _storageService;
   final PasskeyService _passkeyService;
   final TotpService _totpService;
@@ -212,16 +216,15 @@ class AuthRepository {
       Uint8List.fromList(serverResponse),
     );
 
-    // Step 5: Generate key pairs (placeholder - actual implementation would use ML-DSA and ML-KEM)
-    // For now, we'll generate random bytes as placeholders
-    final identityPrivateKey = _cryptoService.generateSalt(64);
-    final transportPrivateKey = _cryptoService.generateSalt(64);
-    final publicIdentityKey = _cryptoService.generateSalt(32);
-    final publicTransportKey = _cryptoService.generateSalt(32);
+    // Step 5: Generate post-quantum key pairs
+    final identityKeyPair = _pqCryptoService.generateIdentityKeyPair();
+    final transportKeyPair = _pqCryptoService.generateTransportKeyPair();
 
     // Step 6: Encrypt private keys with master key
-    final encryptedIdentityKey = _cryptoService.encrypt(identityPrivateKey, masterKey);
-    final encryptedTransportKey = _cryptoService.encrypt(transportPrivateKey, masterKey);
+    final encryptedIdentityKey =
+        _cryptoService.encrypt(identityKeyPair.secretKey, masterKey);
+    final encryptedTransportKey =
+        _cryptoService.encrypt(transportKeyPair.secretKey, masterKey);
 
     // Step 7: Send finish request to server
     await _apiService.post('/auth/opaque/register/finish', {
@@ -229,8 +232,8 @@ class AuthRepository {
       'finish': base64Encode(registrationRecord),
       'kdf_salt': kdfSalt,
       'kdf_iterations': kdfIterations,
-      'public_identity_key': base64Encode(publicIdentityKey),
-      'public_transport_key': base64Encode(publicTransportKey),
+      'public_identity_key': base64Encode(identityKeyPair.publicKey),
+      'public_transport_key': base64Encode(transportKeyPair.publicKey),
       'encrypted_identity_key': encryptedIdentityKey.ciphertext,
       'encrypted_identity_iv': encryptedIdentityKey.iv,
       'encrypted_transport_key': encryptedTransportKey.ciphertext,
@@ -298,15 +301,15 @@ class AuthRepository {
       iterations: kdfIterations,
     );
 
-    // Step 3: Generate key pairs (placeholder - actual implementation would use ML-DSA and ML-KEM)
-    final identityPrivateKey = _cryptoService.generateSalt(64);
-    final transportPrivateKey = _cryptoService.generateSalt(64);
-    final publicIdentityKey = _cryptoService.generateSalt(32);
-    final publicTransportKey = _cryptoService.generateSalt(32);
+    // Step 3: Generate post-quantum key pairs
+    final identityKeyPair = _pqCryptoService.generateIdentityKeyPair();
+    final transportKeyPair = _pqCryptoService.generateTransportKeyPair();
 
     // Step 4: Encrypt private keys with master key
-    final encryptedIdentityKey = _cryptoService.encrypt(identityPrivateKey, masterKey);
-    final encryptedTransportKey = _cryptoService.encrypt(transportPrivateKey, masterKey);
+    final encryptedIdentityKey =
+        _cryptoService.encrypt(identityKeyPair.secretKey, masterKey);
+    final encryptedTransportKey =
+        _cryptoService.encrypt(transportKeyPair.secretKey, masterKey);
 
     // Step 5: Start OPAQUE registration
     final regStart = _opaqueService.registerStart(password);
@@ -354,8 +357,8 @@ class AuthRepository {
       passkeyResponse: passkeyResponse.toJson(),
       kdfSalt: kdfSalt,
       kdfIterations: kdfIterations,
-      publicIdentityKey: base64Encode(publicIdentityKey),
-      publicTransportKey: base64Encode(publicTransportKey),
+      publicIdentityKey: base64Encode(identityKeyPair.publicKey),
+      publicTransportKey: base64Encode(transportKeyPair.publicKey),
       encryptedIdentityKey: encryptedIdentityKey.ciphertext,
       encryptedIdentityIv: encryptedIdentityKey.iv,
       encryptedTransportKey: encryptedTransportKey.ciphertext,
@@ -377,8 +380,8 @@ class AuthRepository {
       kdfIterations: kdfIterations,
       encryptedIdentityKey: encryptedIdentityKey,
       encryptedTransportKey: encryptedTransportKey,
-      publicIdentityKey: base64Encode(publicIdentityKey),
-      publicTransportKey: base64Encode(publicTransportKey),
+      publicIdentityKey: base64Encode(identityKeyPair.publicKey),
+      publicTransportKey: base64Encode(transportKeyPair.publicKey),
     );
 
     // Step 11: Save session
@@ -718,15 +721,15 @@ class AuthRepository {
       iterations: kdfIterations,
     );
 
-    // Step 3: Generate key pairs (placeholder - actual implementation would use ML-DSA and ML-KEM)
-    final identityPrivateKey = _cryptoService.generateSalt(64);
-    final transportPrivateKey = _cryptoService.generateSalt(64);
-    final publicIdentityKey = _cryptoService.generateSalt(32);
-    final publicTransportKey = _cryptoService.generateSalt(32);
+    // Step 3: Generate post-quantum key pairs
+    final identityKeyPair = _pqCryptoService.generateIdentityKeyPair();
+    final transportKeyPair = _pqCryptoService.generateTransportKeyPair();
 
     // Step 4: Encrypt private keys with master key
-    final encryptedIdentityKey = _cryptoService.encrypt(identityPrivateKey, masterKey);
-    final encryptedTransportKey = _cryptoService.encrypt(transportPrivateKey, masterKey);
+    final encryptedIdentityKey =
+        _cryptoService.encrypt(identityKeyPair.secretKey, masterKey);
+    final encryptedTransportKey =
+        _cryptoService.encrypt(transportKeyPair.secretKey, masterKey);
 
     // Step 5: Generate TOTP secret and encrypt it
     final totpSecret = _totpService.generateSecret();
@@ -771,8 +774,8 @@ class AuthRepository {
       encryptedIdentityKey: encryptedIdentityKey,
       encryptedTransportKey: encryptedTransportKey,
       encryptedTotpSecret: encryptedTotpSecret,
-      publicIdentityKey: base64Encode(publicIdentityKey),
-      publicTransportKey: base64Encode(publicTransportKey),
+      publicIdentityKey: base64Encode(identityKeyPair.publicKey),
+      publicTransportKey: base64Encode(transportKeyPair.publicKey),
     );
   }
 

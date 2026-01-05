@@ -6,6 +6,7 @@ import '../data/services/api_service.dart';
 import '../data/services/crypto_service.dart';
 import '../data/services/opaque_service.dart';
 import '../data/services/passkey_service.dart';
+import '../data/services/pq_crypto_service.dart';
 import '../data/services/secure_storage_service.dart';
 import '../data/services/totp_service.dart';
 
@@ -27,6 +28,11 @@ final opaqueServiceProvider = Provider<OpaqueService>((ref) {
 /// Provider for the crypto service.
 final cryptoServiceProvider = Provider<CryptoService>((ref) {
   return CryptoService();
+});
+
+/// Provider for the post-quantum crypto service.
+final pqCryptoServiceProvider = Provider<PqCryptoService>((ref) {
+  return PqCryptoService();
 });
 
 /// Provider for the passkey service.
@@ -53,6 +59,7 @@ final authRepositoryProvider = Provider<AuthRepository>((ref) {
     apiService: ref.watch(apiServiceProvider),
     opaqueService: ref.watch(opaqueServiceProvider),
     cryptoService: ref.watch(cryptoServiceProvider),
+    pqCryptoService: ref.watch(pqCryptoServiceProvider),
     storageService: ref.watch(secureStorageServiceProvider),
     passkeyService: ref.watch(passkeyServiceProvider),
     totpService: ref.watch(totpServiceProvider),
