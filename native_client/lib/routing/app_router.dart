@@ -5,7 +5,7 @@ import 'package:go_router/go_router.dart';
 import '../data/models/auth_state.dart';
 import '../providers/auth_provider.dart';
 import '../providers/server_provider.dart';
-import '../ui/screens/home_screen.dart';
+import '../ui/screens/dashboard_screen.dart';
 import '../ui/screens/lock_screen.dart';
 import '../ui/screens/login_screen.dart';
 import '../ui/screens/master_password_screen.dart';
@@ -108,7 +108,7 @@ GoRouter createAppRouter(WidgetRef ref) {
       GoRoute(
         path: AppRoutes.home,
         name: 'home',
-        builder: (context, state) => const HomeScreen(),
+        builder: (context, state) => const DashboardScreen(),
       ),
       GoRoute(
         path: AppRoutes.server,

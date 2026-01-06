@@ -139,3 +139,28 @@ class TooManyAttemptsException extends AuthException {
     String message = 'Too many attempts, please try again later',
   ]) : super(message);
 }
+
+/// Thrown when a contact is not found in the directory.
+class ContactNotFoundException extends AuthException {
+  const ContactNotFoundException([String message = 'User not found in directory'])
+    : super(message);
+}
+
+/// Thrown when trying to add a contact that already exists.
+class ContactAlreadyExistsException extends AuthException {
+  const ContactAlreadyExistsException([
+    String message = 'Contact already exists',
+  ]) : super(message);
+}
+
+/// Thrown when a directory lookup fails.
+class DirectoryLookupException extends AuthException {
+  const DirectoryLookupException([String message = 'Failed to lookup user'])
+    : super(message);
+}
+
+/// Thrown when a handle format is invalid.
+class InvalidHandleException extends AuthException {
+  const InvalidHandleException([String message = 'Invalid handle format'])
+    : super(message);
+}

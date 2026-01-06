@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/errors/auth_exceptions.dart';
@@ -23,6 +25,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
 
   UserSession? _session;
   DecryptedKeys? _decryptedKeys;
+  Uint8List? _masterKey;
   bool _loggedInWithPasskey = false;
 
   // Password + 2FA login state
@@ -55,6 +58,18 @@ class AuthNotifier extends StateNotifier<AuthState> {
   /// Gets the recovery codes (after registration completion).
   List<String>? get recoveryCodes => _recoveryCodes;
 
+  /// Gets the master key (only available when authenticated).
+  Uint8List? get masterKey => _masterKey;
+
+  /// Gets the master key as a base64 string for persistence.
+  Future<String?> getMasterKeyString() async {
+    if (_masterKey != null) {
+      return _cryptoService.exportKey(_masterKey!);
+    }
+    // Try to load from storage if not in memory
+    return _authRepository.getMasterKey().then((k) => k != null ? _cryptoService.exportKey(k) : null);
+  }
+
   Future<void> _init() async {
     try {
       // Check for existing session
@@ -68,19 +83,20 @@ class AuthNotifier extends StateNotifier<AuthState> {
       _apiService.setToken(session.token);
 
       // Check for saved master key
-      final masterKey = await _authRepository.getMasterKey();
-      if (masterKey != null) {
+      final masterKeyBytes = await _authRepository.getMasterKey();
+      if (masterKeyBytes != null) {
         // Try to decrypt keys
         try {
           final identityKey = _cryptoService.decrypt(
             session.encryptedIdentityKey,
-            masterKey,
+            masterKeyBytes,
           );
           final transportKey = _cryptoService.decrypt(
             session.encryptedTransportKey,
-            masterKey,
+            masterKeyBytes,
           );
 
+          _masterKey = masterKeyBytes;
           _decryptedKeys = DecryptedKeys(
             identityPrivateKey: identityKey,
             transportPrivateKey: transportKey,
@@ -255,6 +271,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
         masterKey,
       );
 
+      _masterKey = masterKey;
       _decryptedKeys = DecryptedKeys(
         identityPrivateKey: identityKey,
         transportPrivateKey: transportKey,
@@ -429,6 +446,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
         masterKey,
       );
 
+      _masterKey = masterKey;
       _decryptedKeys = DecryptedKeys(
         identityPrivateKey: identityKey,
         transportPrivateKey: transportKey,
@@ -479,6 +497,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
         masterKey,
       );
 
+      _masterKey = masterKey;
       _decryptedKeys = DecryptedKeys(
         identityPrivateKey: identityKey,
         transportPrivateKey: transportKey,
@@ -621,6 +640,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
     await _authRepository.logout();
     _session = null;
     _decryptedKeys = null;
+    _masterKey = null;
     _loggedInWithPasskey = false;
     _clearPendingLogin();
     _clearPendingRegistration();
