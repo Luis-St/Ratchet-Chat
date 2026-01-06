@@ -28,4 +28,8 @@ class StorageKeys {
 
   // Master key (only stored if user opts to save password)
   static const masterKey = 'master_key';
+
+  // Contacts (encrypted with master key)
+  static const encryptedContacts = 'encrypted_contacts';
+  static const encryptedContactsIv = 'encrypted_contacts_iv';
 }

@@ -185,6 +185,34 @@ class SecureStorageService {
     await _storage.delete(key: StorageKeys.masterKey);
   }
 
+  // Encrypted contacts cache
+
+  /// Saves encrypted contacts to local storage.
+  Future<void> saveEncryptedContacts(String ciphertext, String iv) async {
+    await Future.wait([
+      _storage.write(key: StorageKeys.encryptedContacts, value: ciphertext),
+      _storage.write(key: StorageKeys.encryptedContactsIv, value: iv),
+    ]);
+  }
+
+  /// Gets encrypted contacts from local storage.
+  Future<EncryptedPayload?> getEncryptedContacts() async {
+    final ciphertext = await _storage.read(key: StorageKeys.encryptedContacts);
+    final iv = await _storage.read(key: StorageKeys.encryptedContactsIv);
+
+    if (ciphertext == null || iv == null) return null;
+
+    return EncryptedPayload(ciphertext: ciphertext, iv: iv);
+  }
+
+  /// Clears encrypted contacts from local storage.
+  Future<void> clearEncryptedContacts() async {
+    await Future.wait([
+      _storage.delete(key: StorageKeys.encryptedContacts),
+      _storage.delete(key: StorageKeys.encryptedContactsIv),
+    ]);
+  }
+
   /// Clears all stored data.
   Future<void> clearAll() async {
     await _storage.deleteAll();

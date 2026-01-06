@@ -1,9 +1,11 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/repositories/auth_repository.dart';
+import '../data/repositories/contacts_repository.dart';
 import '../data/repositories/server_repository.dart';
 import '../data/services/api_service.dart';
 import '../data/services/crypto_service.dart';
+import '../data/services/directory_service.dart';
 import '../data/services/opaque_service.dart';
 import '../data/services/passkey_service.dart';
 import '../data/services/pq_crypto_service.dart';
@@ -63,5 +65,22 @@ final authRepositoryProvider = Provider<AuthRepository>((ref) {
     storageService: ref.watch(secureStorageServiceProvider),
     passkeyService: ref.watch(passkeyServiceProvider),
     totpService: ref.watch(totpServiceProvider),
+  );
+});
+
+/// Provider for the directory service.
+final directoryServiceProvider = Provider<DirectoryService>((ref) {
+  return DirectoryService(
+    apiService: ref.watch(apiServiceProvider),
+  );
+});
+
+/// Provider for the contacts repository.
+final contactsRepositoryProvider = Provider<ContactsRepository>((ref) {
+  return ContactsRepository(
+    apiService: ref.watch(apiServiceProvider),
+    cryptoService: ref.watch(cryptoServiceProvider),
+    storageService: ref.watch(secureStorageServiceProvider),
+    directoryService: ref.watch(directoryServiceProvider),
   );
 });
