@@ -94,3 +94,15 @@ class DecryptedKeys {
   final Uint8List identityPrivateKey;
   final Uint8List transportPrivateKey;
 }
+
+/// Result of unlocking a session, including the master key.
+@immutable
+class UnlockResult {
+  const UnlockResult({
+    required this.decryptedKeys,
+    required this.masterKey,
+  });
+
+  final DecryptedKeys decryptedKeys;
+  final Uint8List masterKey;
+}

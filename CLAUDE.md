@@ -6,6 +6,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Ratchet Chat is a federated, end-to-end encrypted messaging platform using post-quantum cryptography (ML-KEM-768, ML-DSA-65) and the OPAQUE protocol (RFC 9497) for password-authenticated key exchange.
 
+## Requirements
+
+- Node.js 22
+- PostgreSQL (local dev) or Docker for production
+- Flutter SDK 3.10+ (for native_client)
+
 ## Repository Structure
 
 - **server/** - Express.js + Prisma + PostgreSQL backend
@@ -83,9 +89,13 @@ The server never has access to plaintext messages, private keys, or passwords:
 - `lib/crypto.ts` - ML-DSA-65, ML-KEM-768, AES-GCM operations
 - `lib/opaque.ts` - OPAQUE client operations
 - `lib/messageUtils.ts` - Message encryption/decryption
-- `context/AuthContext.tsx` - Auth state management
+- `lib/db.ts` - Dexie/IndexedDB local storage for messages
+- `lib/webrtc.ts` - WebRTC peer connections for voice/video calls
+- `context/AuthContext.tsx` - Auth state, key management
 - `context/SocketContext.tsx` - Real-time messaging (Socket.IO)
-- `sync/` - Message sync coordination
+- `context/SyncContext.tsx` - Message vault synchronization
+- `context/CallContext.tsx` - WebRTC call state management
+- `sync/` - Message sync coordination and deduplication
 
 **Native Client** (`native_client/lib/`):
 - `data/services/` - API, crypto, OPAQUE, passkey, secure storage services
@@ -97,11 +107,13 @@ The server never has access to plaintext messages, private keys, or passwords:
 - `ui/widgets/` - Reusable UI components
 
 ### Database Models
-- `User` - Account with public/encrypted-private keys, OPAQUE password file
+- `User` - Account with public/encrypted-private keys, OPAQUE password file, TOTP 2FA
 - `IncomingQueue` - Transit encrypted messages awaiting client decryption
 - `MessageVault` - Permanent client-encrypted message storage
 - `Session` - JWT sessions with token hashing
 - `PasskeyCredential` - WebAuthn/Passkey credentials
+- `PushSubscription` - Web push notification endpoints per session
+- `TotpRecoveryCode` - Hashed backup codes for TOTP 2FA recovery
 
 ### Federation
 - TOFU (Trust On First Use) model by default

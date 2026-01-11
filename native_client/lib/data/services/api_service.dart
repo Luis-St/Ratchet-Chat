@@ -81,6 +81,27 @@ class ApiService {
     }
   }
 
+  /// Makes a PUT request.
+  Future<Map<String, dynamic>> put(
+    String path,
+    Map<String, dynamic> body, {
+    bool includeAuth = true,
+  }) async {
+    _ensureBaseUrl();
+    try {
+      final response = await _client.put(
+        Uri.parse('$_baseUrl$path'),
+        headers: _buildHeaders(includeAuth: includeAuth),
+        body: jsonEncode(body),
+      );
+      return _handleResponse(response);
+    } on SocketException {
+      throw const NetworkException('Unable to connect to server');
+    } on http.ClientException {
+      throw const NetworkException('Network request failed');
+    }
+  }
+
   /// Makes a DELETE request.
   Future<void> delete(String path, {bool includeAuth = true}) async {
     _ensureBaseUrl();

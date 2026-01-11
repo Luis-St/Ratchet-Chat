@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../data/models/auth_state.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/contacts_provider.dart';
 import '../../providers/server_provider.dart';
@@ -21,34 +22,71 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   bool _sidebarCollapsed = false;
   bool _contactsLoaded = false;
 
-  @override
-  void initState() {
-    super.initState();
-    // Load contacts after first frame
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _initializeContacts();
-    });
-  }
+  void _initializeContacts() {
+    if (!mounted || _contactsLoaded) return;
 
-  Future<void> _initializeContacts() async {
-    if (_contactsLoaded) return;
+    // Ensure server URL is configured before making API calls
+    final serverState = ref.read(serverProvider);
+    if (serverState.activeServer == null) {
+      // Server not configured yet, wait for it
+      debugPrint('DashboardScreen: Waiting for server to be configured');
+      return;
+    }
 
-    final authNotifier = ref.read(authProvider.notifier);
-    final masterKey = authNotifier.masterKey;
+    final masterKey = ref.read(authProvider.notifier).masterKey;
+    if (masterKey == null) {
+      debugPrint('DashboardScreen: Master key is null, cannot load contacts');
+      return;
+    }
 
-    if (masterKey == null) return;
-
-    // Set master key and load contacts
-    ref.read(contactsProvider.notifier).setMasterKey(masterKey);
-    await ref.read(contactsProvider.notifier).loadContacts();
+    debugPrint('DashboardScreen: Initializing contacts...');
+    final contactsNotifier = ref.read(contactsProvider.notifier);
+    contactsNotifier.setMasterKey(masterKey);
+    contactsNotifier.loadContacts();
+    contactsNotifier.startBackgroundSync();
     _contactsLoaded = true;
   }
 
   @override
   Widget build(BuildContext context) {
+    // Listen to auth state changes and load contacts when authenticated
+    ref.listen<AuthState>(authProvider, (previous, next) {
+      if (!mounted) return;
+      if (next.status == AuthStatus.authenticated) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _initializeContacts();
+        });
+      } else if (next.status != AuthStatus.authenticated) {
+        _contactsLoaded = false;
+      }
+    });
+
+    // Listen to server state changes and load contacts when server becomes available
+    ref.listen<ServerState>(serverProvider, (previous, next) {
+      if (!mounted) return;
+      // When server becomes available and we're authenticated but haven't loaded contacts
+      if (next.activeServer != null && !_contactsLoaded) {
+        final authState = ref.read(authProvider);
+        if (authState.status == AuthStatus.authenticated) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) _initializeContacts();
+          });
+        }
+      }
+    });
+
     final authState = ref.watch(authProvider);
     final serverState = ref.watch(serverProvider);
     final theme = Theme.of(context);
+
+    // Check on initial build (in case already authenticated and server is ready)
+    if (authState.status == AuthStatus.authenticated &&
+        serverState.activeServer != null &&
+        !_contactsLoaded) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _initializeContacts();
+      });
+    }
 
     return LayoutBuilder(
       builder: (context, constraints) {
