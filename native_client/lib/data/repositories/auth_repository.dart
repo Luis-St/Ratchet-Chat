@@ -142,7 +142,9 @@ class AuthRepository {
   }
 
   /// Unlocks an existing session by re-deriving the master key.
-  Future<DecryptedKeys> unlock({
+  ///
+  /// Returns both the decrypted keys and the master key.
+  Future<UnlockResult> unlock({
     required String password,
     required UserSession session,
   }) async {
@@ -164,9 +166,12 @@ class AuthRepository {
         masterKey,
       );
 
-      return DecryptedKeys(
-        identityPrivateKey: identityKey,
-        transportPrivateKey: transportKey,
+      return UnlockResult(
+        decryptedKeys: DecryptedKeys(
+          identityPrivateKey: identityKey,
+          transportPrivateKey: transportKey,
+        ),
+        masterKey: masterKey,
       );
     } catch (e) {
       throw const DecryptionException('Invalid password');
@@ -476,7 +481,8 @@ class AuthRepository {
   ///
   /// This method is called when the user is in a "locked" state after passkey login.
   /// It verifies the password using OPAQUE and then decrypts the private keys.
-  Future<DecryptedKeys> unlockWithOpaqueVerification({
+  /// Returns both the decrypted keys and the master key.
+  Future<UnlockResult> unlockWithOpaqueVerification({
     required String password,
     required UserSession session,
     required bool savePassword,
@@ -521,9 +527,12 @@ class AuthRepository {
         await _storageService.saveMasterKey(_cryptoService.exportKey(masterKey));
       }
 
-      return DecryptedKeys(
-        identityPrivateKey: identityKey,
-        transportPrivateKey: transportKey,
+      return UnlockResult(
+        decryptedKeys: DecryptedKeys(
+          identityPrivateKey: identityKey,
+          transportPrivateKey: transportKey,
+        ),
+        masterKey: masterKey,
       );
     } catch (e) {
       throw const DecryptionException('Invalid password');
@@ -693,6 +702,11 @@ class AuthRepository {
     if (savePassword) {
       await _storageService.saveMasterKey(_cryptoService.exportKey(masterKey));
     }
+  }
+
+  /// Saves only the master key (for "remember password" feature).
+  Future<void> saveMasterKeyOnly(Uint8List masterKey) async {
+    await _storageService.saveMasterKey(_cryptoService.exportKey(masterKey));
   }
 
   // ============== PASSWORD + 2FA REGISTRATION METHODS ==============

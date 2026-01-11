@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
+
 import '../../core/errors/auth_exceptions.dart';
 import '../models/contact.dart';
 import '../models/user_session.dart';
@@ -62,11 +64,14 @@ class ContactsRepository {
       return contacts;
     } on SessionExpiredException {
       rethrow;
-    } on NetworkException {
+    } on NetworkException catch (e) {
       // Try to load from cache if network fails
+      debugPrint('ContactsRepository: Network error fetching contacts: $e');
       return _loadCachedContacts(masterKey);
-    } catch (e) {
+    } catch (e, stackTrace) {
       // Try to load from cache on error
+      debugPrint('ContactsRepository: Error fetching contacts: $e');
+      debugPrint('ContactsRepository: Stack trace: $stackTrace');
       return _loadCachedContacts(masterKey);
     }
   }
@@ -209,7 +214,7 @@ class ContactsRepository {
     );
 
     // Upload to server
-    await _apiService.post('/auth/contacts', {
+    await _apiService.put('/auth/contacts', {
       'ciphertext': encrypted.ciphertext,
       'iv': encrypted.iv,
     });

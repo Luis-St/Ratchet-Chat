@@ -1,5 +1,7 @@
+import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/errors/auth_exceptions.dart';
@@ -17,9 +19,34 @@ class ContactsNotifier extends StateNotifier<ContactsState> {
   /// The master key used for encryption (must be set before operations).
   Uint8List? _masterKey;
 
+  /// Timer for periodic background sync.
+  Timer? _syncTimer;
+
   /// Sets the master key for encryption operations.
   void setMasterKey(Uint8List? key) {
     _masterKey = key;
+  }
+
+  /// Starts periodic background sync (every 60 seconds).
+  void startBackgroundSync() {
+    stopBackgroundSync(); // Cancel any existing timer
+    _syncTimer = Timer.periodic(const Duration(seconds: 60), (_) {
+      if (_masterKey != null) {
+        loadContacts();
+      }
+    });
+  }
+
+  /// Stops the background sync timer.
+  void stopBackgroundSync() {
+    _syncTimer?.cancel();
+    _syncTimer = null;
+  }
+
+  @override
+  void dispose() {
+    stopBackgroundSync();
+    super.dispose();
   }
 
   /// Loads contacts from the server.
@@ -27,19 +54,24 @@ class ContactsNotifier extends StateNotifier<ContactsState> {
   /// Must call [setMasterKey] first.
   Future<void> loadContacts() async {
     if (_masterKey == null) {
+      debugPrint('ContactsNotifier: Cannot load contacts - master key is null');
       state = state.copyWith(error: 'Not authenticated');
       return;
     }
 
+    debugPrint('ContactsNotifier: Loading contacts...');
     state = state.copyWith(isLoading: true, error: null);
 
     try {
       final contacts = await _contactsRepository.fetchContacts(_masterKey!);
+      debugPrint('ContactsNotifier: Loaded ${contacts.length} contacts');
       state = ContactsState(contacts: contacts);
     } on SessionExpiredException {
+      debugPrint('ContactsNotifier: Session expired while loading contacts');
       state = state.copyWith(isLoading: false, error: 'Session expired');
       rethrow;
     } catch (e) {
+      debugPrint('ContactsNotifier: Error loading contacts: $e');
       state = state.copyWith(isLoading: false, error: e.toString());
     }
   }
@@ -145,6 +177,7 @@ class ContactsNotifier extends StateNotifier<ContactsState> {
 
   /// Clears contacts state (called on logout).
   Future<void> clear() async {
+    stopBackgroundSync();
     _masterKey = null;
     state = const ContactsState.initial();
     await _contactsRepository.clearCache();

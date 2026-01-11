@@ -340,25 +340,32 @@ class AuthNotifier extends StateNotifier<AuthState> {
     state = const AuthState.loading();
 
     try {
-      DecryptedKeys decryptedKeys;
+      UnlockResult unlockResult;
 
       if (_loggedInWithPasskey) {
         // User logged in with passkey, verify password via OPAQUE
-        decryptedKeys = await _authRepository.unlockWithOpaqueVerification(
+        unlockResult = await _authRepository.unlockWithOpaqueVerification(
           password: password,
           session: _session!,
           savePassword: savePassword,
         );
       } else {
         // Regular unlock, just decrypt keys locally
-        decryptedKeys = await _authRepository.unlock(
+        unlockResult = await _authRepository.unlock(
           password: password,
           session: _session!,
         );
       }
 
-      _decryptedKeys = decryptedKeys;
+      // Store both the master key and decrypted keys
+      _masterKey = unlockResult.masterKey;
+      _decryptedKeys = unlockResult.decryptedKeys;
       _loggedInWithPasskey = false; // Reset flag
+
+      // Optionally save master key for future auto-unlock
+      if (savePassword && !_loggedInWithPasskey) {
+        await _authRepository.saveMasterKeyOnly(unlockResult.masterKey);
+      }
 
       state = AuthState.authenticated(
         userId: _session!.userId,
