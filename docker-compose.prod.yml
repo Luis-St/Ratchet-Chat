@@ -23,6 +23,7 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgresql://ratchet:ratchet_password@db:5432/ratchet_chat}
       JWT_SECRET: ${JWT_SECRET:-change-me}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3001}
+      LOG_LEVEL: ${LOG_LEVEL:-warn}
       LOG_DIR: /data/logs
       SERVER_CERT_PATH: /data/.cert
       OPAQUE_FILE_PATH: /data/.opaque
