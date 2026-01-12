@@ -593,7 +593,9 @@ export const federationRequestJson = async (
       servername: hostname,
     };  const requestClient = parsed.protocol === "https:" ? https : http;
 
-  return await new Promise<FederationRequestResult>((resolve, reject) => {
+  const timeoutMs = Number(process.env.FEDERATION_REQUEST_TIMEOUT_MS ?? 15000);
+
+  return await new Promise<FederationRequestResult>((resolve) => {
     const req = requestClient.request(requestOptions, (res) => {
       const status = res.statusCode ?? 500;
       const chunks: Buffer[] = [];
@@ -616,6 +618,11 @@ export const federationRequestJson = async (
           json,
         });
       });
+    });
+
+    req.setTimeout(timeoutMs, () => {
+      req.destroy();
+      resolve({ ok: false, status: 504, error: "Federation request timeout" });
     });
 
     req.on("error", (error) => {

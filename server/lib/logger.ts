@@ -7,8 +7,15 @@ const SERVER_LOG_PATH =
   process.env.SERVER_LOG_PATH ?? path.join(LOG_DIR, "server.log");
 const CLIENT_LOG_PATH =
   process.env.CLIENT_LOG_PATH ?? path.join(LOG_DIR, "client.log");
-const LOG_LEVEL = process.env.LOG_LEVEL ?? "info";
 const MAX_STRING_LENGTH = Number(process.env.LOG_MAX_STRING_LENGTH ?? 20000);
+
+// Detect if running in Docker/production - use console logging instead of files
+const isProduction = process.env.NODE_ENV === "production";
+const isDocker = fs.existsSync("/.dockerenv") || process.env.DOCKER_CONTAINER === "true";
+const useConsoleLogging = isProduction || isDocker;
+
+// Default to 'warn' in production to reduce noise, 'info' in development
+const LOG_LEVEL = process.env.LOG_LEVEL ?? (isProduction ? "warn" : "info");
 
 const SENSITIVE_KEYS = new Set([
   "password",
@@ -35,21 +42,34 @@ const ensureLogDir = () => {
   }
 };
 
-const buildLogger = (filename: string) => {
-  ensureLogDir();
+const buildLogger = (loggerName: string, filename: string) => {
+  const format = winston.format.combine(
+    winston.format.timestamp(),
+    winston.format.errors({ stack: true }),
+    useConsoleLogging
+      ? winston.format.printf(({ timestamp, level, message, ...meta }) => {
+          const metaStr = Object.keys(meta).length ? JSON.stringify(meta) : "";
+          return `[${timestamp}] [${loggerName}] ${level}: ${message} ${metaStr}`;
+        })
+      : winston.format.json()
+  );
+
+  const transports = useConsoleLogging
+    ? [new winston.transports.Console()]
+    : (() => {
+        ensureLogDir();
+        return [new winston.transports.File({ filename })];
+      })();
+
   return winston.createLogger({
     level: LOG_LEVEL,
-    format: winston.format.combine(
-      winston.format.timestamp(),
-      winston.format.errors({ stack: true }),
-      winston.format.json()
-    ),
-    transports: [new winston.transports.File({ filename })],
+    format,
+    transports,
   });
 };
 
-export const serverLogger = buildLogger(SERVER_LOG_PATH);
-export const clientLogger = buildLogger(CLIENT_LOG_PATH);
+export const serverLogger = buildLogger("SERVER", SERVER_LOG_PATH);
+export const clientLogger = buildLogger("CLIENT", CLIENT_LOG_PATH);
 
 export const sanitizeLogPayload = (value: unknown): unknown => {
   const seen = new WeakSet<object>();
