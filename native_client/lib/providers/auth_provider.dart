@@ -13,15 +13,19 @@ import '../data/services/crypto_service.dart';
 import 'service_providers.dart';
 
 /// Notifier for managing authentication state.
-class AuthNotifier extends StateNotifier<AuthState> {
-  AuthNotifier(this._authRepository, this._apiService, this._cryptoService)
-    : super(const AuthState.loading()) {
-    _init();
-  }
+class AuthNotifier extends Notifier<AuthState> {
+  late final AuthRepository _authRepository;
+  late final ApiService _apiService;
+  late final CryptoService _cryptoService;
 
-  final AuthRepository _authRepository;
-  final ApiService _apiService;
-  final CryptoService _cryptoService;
+  @override
+  AuthState build() {
+    _authRepository = ref.watch(authRepositoryProvider);
+    _apiService = ref.watch(apiServiceProvider);
+    _cryptoService = ref.watch(cryptoServiceProvider);
+    _init();
+    return const AuthState.loading();
+  }
 
   UserSession? _session;
   DecryptedKeys? _decryptedKeys;
@@ -661,10 +665,6 @@ class AuthNotifier extends StateNotifier<AuthState> {
 }
 
 /// Provider for authentication state.
-final authProvider = StateNotifierProvider<AuthNotifier, AuthState>((ref) {
-  return AuthNotifier(
-    ref.watch(authRepositoryProvider),
-    ref.watch(apiServiceProvider),
-    ref.watch(cryptoServiceProvider),
-  );
-});
+final authProvider = NotifierProvider<AuthNotifier, AuthState>(
+  AuthNotifier.new,
+);
