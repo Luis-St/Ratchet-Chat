@@ -11,10 +11,17 @@ import '../data/repositories/contacts_repository.dart';
 import 'service_providers.dart';
 
 /// Notifier for managing contacts state.
-class ContactsNotifier extends StateNotifier<ContactsState> {
-  ContactsNotifier(this._contactsRepository) : super(const ContactsState.initial());
+class ContactsNotifier extends Notifier<ContactsState> {
+  late final ContactsRepository _contactsRepository;
 
-  final ContactsRepository _contactsRepository;
+  @override
+  ContactsState build() {
+    _contactsRepository = ref.watch(contactsRepositoryProvider);
+    ref.onDispose(() {
+      stopBackgroundSync();
+    });
+    return const ContactsState.initial();
+  }
 
   /// The master key used for encryption (must be set before operations).
   Uint8List? _masterKey;
@@ -41,12 +48,6 @@ class ContactsNotifier extends StateNotifier<ContactsState> {
   void stopBackgroundSync() {
     _syncTimer?.cancel();
     _syncTimer = null;
-  }
-
-  @override
-  void dispose() {
-    stopBackgroundSync();
-    super.dispose();
   }
 
   /// Loads contacts from the server.
@@ -185,8 +186,6 @@ class ContactsNotifier extends StateNotifier<ContactsState> {
 }
 
 /// Provider for the contacts notifier.
-final contactsProvider = StateNotifierProvider<ContactsNotifier, ContactsState>(
-  (ref) {
-    return ContactsNotifier(ref.watch(contactsRepositoryProvider));
-  },
+final contactsProvider = NotifierProvider<ContactsNotifier, ContactsState>(
+  ContactsNotifier.new,
 );

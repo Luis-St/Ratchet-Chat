@@ -45,14 +45,17 @@ class ServerState {
 }
 
 /// Notifier for managing server state.
-class ServerNotifier extends StateNotifier<ServerState> {
-  ServerNotifier(this._serverRepository, this._apiService)
-    : super(const ServerState(isLoading: true)) {
-    _init();
-  }
+class ServerNotifier extends Notifier<ServerState> {
+  late final ServerRepository _serverRepository;
+  late final dynamic _apiService;
 
-  final ServerRepository _serverRepository;
-  final dynamic _apiService;
+  @override
+  ServerState build() {
+    _serverRepository = ref.watch(serverRepositoryProvider);
+    _apiService = ref.watch(apiServiceProvider);
+    _init();
+    return const ServerState(isLoading: true);
+  }
 
   Future<void> _init() async {
     try {
@@ -124,11 +127,6 @@ class ServerNotifier extends StateNotifier<ServerState> {
 }
 
 /// Provider for server state.
-final serverProvider = StateNotifierProvider<ServerNotifier, ServerState>((
-  ref,
-) {
-  return ServerNotifier(
-    ref.watch(serverRepositoryProvider),
-    ref.watch(apiServiceProvider),
-  );
-});
+final serverProvider = NotifierProvider<ServerNotifier, ServerState>(
+  ServerNotifier.new,
+);
