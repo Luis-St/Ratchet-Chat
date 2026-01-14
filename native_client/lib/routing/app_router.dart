@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 import '../data/models/auth_state.dart';
 import '../providers/auth_provider.dart';
 import '../providers/server_provider.dart';
+import '../ui/screens/chat_screen.dart';
 import '../ui/screens/dashboard_screen.dart';
 import '../ui/screens/lock_screen.dart';
 import '../ui/screens/login_screen.dart';
@@ -26,6 +27,10 @@ class AppRoutes {
   static const totpSetup = '/totp-setup';
   static const recoveryCodes = '/recovery-codes';
   static const home = '/';
+  static const chat = '/chat/:handle';
+
+  /// Creates a chat route path for a specific handle.
+  static String chatPath(String handle) => '/chat/${Uri.encodeComponent(handle)}';
 }
 
 /// Creates the app router with proper redirect logic.
@@ -47,6 +52,7 @@ GoRouter createAppRouter(WidgetRef ref) {
       final isOnTotpSetupPage = state.matchedLocation == AppRoutes.totpSetup;
       final isOnRecoveryCodesPage = state.matchedLocation == AppRoutes.recoveryCodes;
       final isOnHomePage = state.matchedLocation == AppRoutes.home;
+      final isOnChatPage = state.matchedLocation.startsWith('/chat/');
 
       // Still loading, don't redirect
       if (isLoading) {
@@ -94,8 +100,8 @@ GoRouter createAppRouter(WidgetRef ref) {
           return AppRoutes.recoveryCodes;
 
         case AuthStatus.authenticated:
-          // Authenticated, go home unless already there
-          if (isOnHomePage) return null;
+          // Authenticated, allow home or chat pages
+          if (isOnHomePage || isOnChatPage) return null;
           if (isOnServerPage || isOnLoginPage || isOnLockPage ||
               isOn2faPage || isOnMasterPasswordPage ||
               isOnTotpSetupPage || isOnRecoveryCodesPage) {
@@ -147,6 +153,14 @@ GoRouter createAppRouter(WidgetRef ref) {
         path: AppRoutes.recoveryCodes,
         name: 'recoveryCodes',
         builder: (context, state) => const RecoveryCodesScreen(),
+      ),
+      GoRoute(
+        path: AppRoutes.chat,
+        name: 'chat',
+        builder: (context, state) {
+          final handle = Uri.decodeComponent(state.pathParameters['handle'] ?? '');
+          return ChatScreen(peerHandle: handle);
+        },
       ),
     ],
     errorBuilder: (context, state) => Scaffold(

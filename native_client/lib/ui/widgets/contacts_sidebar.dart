@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
 import '../../data/models/contacts_state.dart';
 import '../../providers/contacts_provider.dart';
+import '../../routing/app_router.dart';
 import 'add_contact_dialog.dart';
 import 'contact_list_tile.dart';
 
@@ -226,13 +228,7 @@ class ContactsSidebar extends ConsumerWidget {
             contact: contact,
             collapsed: isCollapsed,
             onTap: () {
-              // TODO: Open chat with contact
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text('Chat with ${contact.effectiveDisplayName} coming soon'),
-                  duration: const Duration(seconds: 2),
-                ),
-              );
+              context.go(AppRoutes.chatPath(contact.handle));
             },
             onDelete: () => _confirmDeleteContact(context, ref, contact.handle),
           );

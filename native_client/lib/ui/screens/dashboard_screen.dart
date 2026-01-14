@@ -4,7 +4,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../data/models/auth_state.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/contacts_provider.dart';
+import '../../providers/messages_provider.dart';
 import '../../providers/server_provider.dart';
+import '../../providers/socket_provider.dart';
+import '../../providers/sync_provider.dart';
 import '../widgets/contacts_sidebar.dart';
 
 /// Main dashboard screen with responsive layout.
@@ -21,6 +24,7 @@ class DashboardScreen extends ConsumerStatefulWidget {
 class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   bool _sidebarCollapsed = false;
   bool _contactsLoaded = false;
+  bool _messagingInitialized = false;
 
   void _initializeContacts() {
     if (!mounted || _contactsLoaded) return;
@@ -45,6 +49,23 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     contactsNotifier.loadContacts();
     contactsNotifier.startBackgroundSync();
     _contactsLoaded = true;
+
+    // Initialize messaging after contacts are loaded
+    _initializeMessaging();
+  }
+
+  void _initializeMessaging() {
+    if (!mounted || _messagingInitialized) return;
+
+    debugPrint('DashboardScreen: Initializing messaging...');
+
+    // Socket and sync providers will auto-connect/sync when watched
+    // Just watch them to trigger initialization
+    ref.read(socketProvider);
+    ref.read(syncProvider);
+    ref.read(conversationsProvider);
+
+    _messagingInitialized = true;
   }
 
   @override
@@ -58,6 +79,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
         });
       } else if (next.status != AuthStatus.authenticated) {
         _contactsLoaded = false;
+        _messagingInitialized = false;
       }
     });
 
@@ -287,6 +309,8 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   }
 
   Future<void> _handleLogout() async {
+    // Disconnect socket
+    ref.read(socketProvider.notifier).disconnect();
     // Clear contacts before logout
     await ref.read(contactsProvider.notifier).clear();
     await ref.read(authProvider.notifier).logout();

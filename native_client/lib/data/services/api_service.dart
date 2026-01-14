@@ -305,6 +305,19 @@ class ApiService {
     }, includeAuth: false);
   }
 
+  // ============== DIRECTORY ENDPOINTS ==============
+
+  /// Looks up a user by handle in the directory.
+  /// Returns user's public keys and profile info.
+  Future<Map<String, dynamic>?> lookupDirectory(String handle) async {
+    try {
+      return await get('/directory?handle=${Uri.encodeComponent(handle)}');
+    } catch (e) {
+      // User not found or error - return null
+      return null;
+    }
+  }
+
   /// Validates that a URL points to a valid Ratchet Chat server.
   Future<bool> validateServer(String url) async {
     try {
