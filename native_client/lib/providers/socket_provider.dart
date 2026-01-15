@@ -59,7 +59,10 @@ class SocketNotifier extends Notifier<SocketState> {
     if (authState.isAuthenticated && serverState.activeServer?.url != null) {
       final session = ref.read(authProvider.notifier).session;
       if (session != null) {
-        _connect(serverState.activeServer!.url, session.token);
+        // Defer connection until after build() completes to avoid accessing state
+        Future.microtask(() {
+          _connect(serverState.activeServer!.url, session.token);
+        });
       }
     } else {
       // Disconnect when logged out

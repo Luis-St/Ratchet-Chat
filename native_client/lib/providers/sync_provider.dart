@@ -95,8 +95,8 @@ class SyncNotifier extends Notifier<SyncState> {
         });
       });
 
-      // Initial sync
-      _initialSync();
+      // Defer initial sync until after build() completes to avoid accessing state
+      Future.microtask(() => _initialSync());
 
       // Start periodic sync (every 60 seconds as backup)
       _periodicSyncTimer?.cancel();
